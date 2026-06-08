@@ -60,3 +60,6 @@
 #define PROBE_BIT           (1<<PROBE_PIN)
 #define PROBE_CONNECTED_BIT (1<<PROBE_CONNECTED_PIN)
 #define PROBE_MASK          (PROBE_BIT|PROBE_CONNECTED_BIT)
+
+// Update simulated limit / probe inputs from the tracked machine position (called each sim tick).
+void sim_update_inputs (void);

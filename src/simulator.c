@@ -70,13 +70,6 @@ void simulate_hardware (bool do_serial)
 
     if (do_serial)
         simulate_serial();
-/*
-    mcu_gpio_in(&gpio[LIMITS_PORT0], sys_position[X_AXIS] >= 250 ? 1 : 0, 1);
-    mcu_gpio_in(&gpio[LIMITS_PORT1], sys_position[X_AXIS] >= 280 ? 1 : 0, 1);
-*/
-  //TODO:
-  //  check limit pins,  call pinchange interrupt if enabled
-  //  can ignore pinout int vect - hw start/hold not supported
 }
 
 // Runs the hardware simulator at the desired rate until sim.exit is set

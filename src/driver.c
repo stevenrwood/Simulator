@@ -40,6 +40,21 @@ static uint32_t ticks = 0;
 static delay_t delay = { .ms = 1, .callback = NULL }; // NOTE: initial ms set to 1 for "resetting" systick timer on startup
 static on_execute_realtime_ptr on_execute_realtime;
 
+// --- simulated machine model ----------------------------------------------------------------------
+// grbl resets sys.position to 0 at the start of each homing approach, so an independent absolute
+// step counter is needed to trip the simulated limit and probe switches. It is advanced one step per
+// axis per stepper pulse (see stepperPulseStart) and read by sim_update_inputs().
+static int32_t sim_axis_pos[N_AXIS] = {0};
+
+// Simulated probe: the probe input trips when the Z axis has descended PROBE_TRIP_MM (a positive
+// magnitude) below where probing started. Matches a touch-off that triggers after a fixed approach;
+// set to your sensor's trip distance (e.g. 4.0). Probe start is captured the first tick a probe move
+// is active (see sim_update_inputs).
+#define PROBE_AXIS   Z_AXIS
+#define PROBE_TRIP_MM 4.0f
+static int32_t sim_probe_start;
+static bool sim_probe_armed = false;
+
 void SysTick_Handler (void);
 void Stepper_IRQHandler (void);
 void Limits0_IRQHandler (void);
@@ -148,7 +163,15 @@ static void stepperPulseStart (stepper_t *stepper)
     }
 
     if(stepper->step_out.bits) {
+        // Advance the absolute machine model one step per stepping axis (logical direction: a set
+        // dir_out bit is a negative move) so the simulated limit / probe switches can trip.
+        uint_fast8_t i = 0;
+        do {
+            if(stepper->step_out.bits & bit(i))
+                sim_axis_pos[i] += (stepper->dir_out.bits & bit(i)) ? -1 : 1;
+        } while(++i < N_AXIS);
         set_step_outputs(stepper->step_out);
+        sim_update_inputs();    // re-evaluate limit / probe switches now the position changed
     }
 }
 
@@ -229,6 +252,41 @@ static void limitsEnable (bool on, axes_signals_t homing_cycle)
   #endif
 }
 
+// Drive the simulated limit and probe inputs from the tracked machine position. Called per step (from
+// stepperPulseStart, the only time positions change) so it adds no per-tick overhead. grbl's default
+// limitsGetState() reads only LIMITS_PORT0, so every axis limit is asserted there - the switch for an
+// axis sits at its travel extreme on the homing side.
+void sim_update_inputs (void)
+{
+    uint16_t trip = 0;
+    uint_fast8_t i = 0;
+    do {
+        // travel limit in steps; settings.axis[].max_travel is stored as a negative magnitude.
+        int32_t travel = (int32_t)(-settings.axis[i].max_travel * settings.axis[i].steps_per_mm);
+        if(travel > 0) {
+            if(bit_istrue(settings.homing.dir_mask.value, bit(i))) {     // axis homes toward negative
+                if(sim_axis_pos[i] <= -travel)
+                    trip |= bit(i);
+            } else {                                                     // axis homes toward positive
+                if(sim_axis_pos[i] >= travel)
+                    trip |= bit(i);
+            }
+        }
+    } while(++i < N_AXIS);
+
+    mcu_gpio_in(&gpio[LIMITS_PORT0], trip, AXES_BITMASK);
+
+    // Probe: once armed (by probeConfigureInvertMask at the start of a probe cycle) trip after the
+    // probe axis has travelled PROBE_TRIP_MM from where the cycle started, in either direction.
+    if(sim_probe_armed) {
+        int32_t moved = sim_axis_pos[PROBE_AXIS] - sim_probe_start;
+        if(moved < 0)
+            moved = -moved;
+        bool tripped = moved >= (int32_t)(PROBE_TRIP_MM * settings.axis[PROBE_AXIS].steps_per_mm);
+        mcu_gpio_in(&gpio[PROBE_PORT], PROBE_CONNECTED_BIT | (tripped ? PROBE_BIT : 0), PROBE_MASK);
+    }
+}
+
 static control_signals_t systemGetState (void)
 {
     control_signals_t signals;
@@ -248,6 +306,18 @@ static void probeConfigureInvertMask (bool is_probe_away, bool probing)
 
   if (is_probe_away)
       probe_invert ^= is_probe_away;
+
+  // Arm the simulated probe at the start of a probe cycle (capture where the probe axis starts);
+  // release the trigger when the cycle ends.
+  if (probing) {
+      if (!sim_probe_armed) {
+          sim_probe_start = sim_axis_pos[PROBE_AXIS];
+          sim_probe_armed = true;
+      }
+  } else {
+      sim_probe_armed = false;
+      mcu_gpio_in(&gpio[PROBE_PORT], PROBE_CONNECTED_BIT, PROBE_MASK);
+  }
 }
 
 // Returns the probe connected and triggered pin states.
