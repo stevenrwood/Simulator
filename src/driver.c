@@ -132,8 +132,15 @@ static void stepperEnable (axes_signals_t enable, bool hold)
 // Starts stepper driver ISR timer and forces a stepper driver interrupt callback
 static void stepperWakeUp (void)
 {
-    if(state_get() == STATE_HOMING)
+    static bool homing_announced = false;
+    if(state_get() == STATE_HOMING) {
+        if(!homing_announced) {     // one feedback line at the start of a homing cycle - the sim runs
+            homing_announced = true; // slowly + silently during $H, so give the sender something to show
+            hal.stream.write("[MSG:Homing]" ASCII_EOL);
+        }
         sim_park_for_homing();
+    } else
+        homing_announced = false;
 
     timer[STEPPER_TIMER].load = 5000;
     timer[STEPPER_TIMER].value = 0;
