@@ -29,6 +29,7 @@
 #include "platform.h"
 
 #include "grbl/hal.h"
+#include "grbl/state_machine.h"
 
 #ifndef SQUARING_ENABLED
 #define SQUARING_ENABLED 0
@@ -54,6 +55,12 @@ static int32_t sim_axis_pos[N_AXIS] = {0};
 #define PROBE_TRIP_MM 4.0f
 static int32_t sim_probe_start;
 static bool sim_probe_armed = false;
+
+// To keep $H fast in the sim (it steps at a fraction of real time during the homing loop, so driving
+// the full max-travel to the switch is slow), the simulated carriage is parked this far from each home
+// switch when a homing move starts - so the seek only has to cover ~this distance, not the whole travel.
+#define HOMING_SEEK_OFFSET_MM 6.0f
+static void sim_park_for_homing (void);
 
 void SysTick_Handler (void);
 void Stepper_IRQHandler (void);
@@ -125,11 +132,40 @@ static void stepperEnable (axes_signals_t enable, bool hold)
 // Starts stepper driver ISR timer and forces a stepper driver interrupt callback
 static void stepperWakeUp (void)
 {
+    if(state_get() == STATE_HOMING)
+        sim_park_for_homing();
+
     timer[STEPPER_TIMER].load = 5000;
     timer[STEPPER_TIMER].value = 0;
     timer[STEPPER_TIMER].enable = 1;
 
 //    hal.stepper_interrupt_callback();   // start the show
+}
+
+// Called at the start of each homing move: park any axis that is more than HOMING_SEEK_OFFSET_MM from
+// its home switch right up close to the switch, so the seek is short and $H finishes quickly. Only
+// moves axes that are far away, so it shortcuts the long search pass but leaves the pull-off / locate
+// passes (which start near the switch) untouched. This only shifts WHEN the switch trips - grbl tracks
+// its own position independently, so homing accuracy is unaffected.
+static void sim_park_for_homing (void)
+{
+    uint_fast8_t i = 0;
+    do {
+        int32_t travel = (int32_t)(-settings.axis[i].max_travel * settings.axis[i].steps_per_mm);
+        if(travel > 0) {
+            int32_t offset = (int32_t)(HOMING_SEEK_OFFSET_MM * settings.axis[i].steps_per_mm);
+            if(offset >= travel)
+                offset = travel / 2;            // tiny travel: park half way
+            int32_t park = travel - offset;     // distance from origin to the parked spot
+            if(bit_istrue(settings.homing.dir_mask.value, bit(i))) {     // homes toward negative
+                if(sim_axis_pos[i] > -park)
+                    sim_axis_pos[i] = -park;
+            } else {                                                     // homes toward positive
+                if(sim_axis_pos[i] < park)
+                    sim_axis_pos[i] = park;
+            }
+        }
+    } while(++i < N_AXIS);
 }
 
 // Disables stepper driver interrupts
