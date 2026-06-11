@@ -284,11 +284,18 @@ static limit_signals_t limitsGetHomeState()
 
 static void limitsEnable (bool on, axes_signals_t homing_cycle)
 {
-    gpio[LIMITS_PORT0].irq_mask.mask = on ? AXES_BITMASK : 0;
+    // During a homing cycle (homing_cycle.mask != 0) the core asks us to suppress the hard-limit
+    // pin-change interrupt for the cycle's duration - homing detects the switches by polling get_state().
+    // Leaving the IRQ live makes a homing trip fire limit_interrupt_handler (mc_reset + hard-limit alarm)
+    // and aborts the cycle, which surfaces as Alarm 8 (pull-off fail). The core re-enables it afterwards
+    // via enable(hard_enabled, {0}) from mc_homing_cycle (motion_control.c).
+    bool irq_on = on && homing_cycle.mask == 0;
+
+    gpio[LIMITS_PORT0].irq_mask.mask = irq_on ? AXES_BITMASK : 0;
     gpio[LIMITS_PORT0].irq_state.mask = 0;
 
   #if SQUARING_ENABLED
-    gpio[LIMITS_PORT1].irq_mask.mask = on ? AXES_BITMASK : 0;
+    gpio[LIMITS_PORT1].irq_mask.mask = irq_on ? AXES_BITMASK : 0;
     gpio[LIMITS_PORT1].irq_state.mask = 0;
 
     hal.limits.get_state = homing_cycle.mask != 0 ? limitsGetHomeState : limitsGetState;
@@ -493,10 +500,7 @@ bool driver_setup (settings_t *settings)
     gpio[SPINDLE_PORT].dir.mask = SPINDLE_MASK;
 
     gpio[LIMITS_PORT0].dir.mask = AXES_BITMASK;
-    // Fire on BOTH edges: with $5 invert the at-switch transition is falling for inverted axes, so hard
-    // limits (IRQ-driven) must catch either edge. The ISR reads get_state(), which only flags a true assert.
     gpio[LIMITS_PORT0].rising.mask = AXES_BITMASK;
-    gpio[LIMITS_PORT0].falling.mask = AXES_BITMASK;
     mcu_register_irq_handler(Limits0_IRQHandler, LIMITS_IRQ0);
 
 #if SQUARING_ENABLED
@@ -504,7 +508,6 @@ bool driver_setup (settings_t *settings)
 
     gpio[LIMITS_PORT1].dir.mask = AXES_BITMASK;
     gpio[LIMITS_PORT1].rising.mask = AXES_BITMASK;
-    gpio[LIMITS_PORT1].falling.mask = AXES_BITMASK;
     mcu_register_irq_handler(Limits1_IRQHandler, LIMITS_IRQ1);
 #endif
 
