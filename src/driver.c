@@ -317,7 +317,10 @@ void sim_update_inputs (void)
         }
     } while(++i < N_AXIS);
 
-    mcu_gpio_in(&gpio[LIMITS_PORT0], trip, AXES_BITMASK);
+    // Drive the ELECTRICAL pin level pre-inverted by $5 (limit invert mask): limitsGetState() re-applies
+    // the same invert, so the firmware reads the true logical "at switch" state for any switch type. Without
+    // this an inverted ($5) axis reads asserted off the switch and homing's pull-off check fails (Alarm 8).
+    mcu_gpio_in(&gpio[LIMITS_PORT0], trip ^ settings.limits.invert.mask, AXES_BITMASK);
 
     // Probe: once armed (by probeConfigureInvertMask at the start of a probe cycle) trip after the
     // probe axis has travelled PROBE_TRIP_MM from where the cycle started, in either direction.
@@ -490,7 +493,10 @@ bool driver_setup (settings_t *settings)
     gpio[SPINDLE_PORT].dir.mask = SPINDLE_MASK;
 
     gpio[LIMITS_PORT0].dir.mask = AXES_BITMASK;
+    // Fire on BOTH edges: with $5 invert the at-switch transition is falling for inverted axes, so hard
+    // limits (IRQ-driven) must catch either edge. The ISR reads get_state(), which only flags a true assert.
     gpio[LIMITS_PORT0].rising.mask = AXES_BITMASK;
+    gpio[LIMITS_PORT0].falling.mask = AXES_BITMASK;
     mcu_register_irq_handler(Limits0_IRQHandler, LIMITS_IRQ0);
 
 #if SQUARING_ENABLED
@@ -498,6 +504,7 @@ bool driver_setup (settings_t *settings)
 
     gpio[LIMITS_PORT1].dir.mask = AXES_BITMASK;
     gpio[LIMITS_PORT1].rising.mask = AXES_BITMASK;
+    gpio[LIMITS_PORT1].falling.mask = AXES_BITMASK;
     mcu_register_irq_handler(Limits1_IRQHandler, LIMITS_IRQ1);
 #endif
 
@@ -526,6 +533,23 @@ bool driver_setup (settings_t *settings)
 // ensures hardware simulator gets some cycles in "parallel"
 void sim_process_realtime (uint_fast16_t state)
 {
+    // One-shot, once settings are loaded: place the simulated carriage in the middle of the X/Y work
+    // area and 10 mm below Z home instead of booting on the home corner, so a subsequent $H is a clearly
+    // visible move in the sender's 3D view. sys.position is what grbl reports (drives the displayed
+    // tool); sim_axis_pos is the sim's own switch-tripping counter - set both so they stay in step.
+    // max_travel is stored negative (work envelope is [max_travel, 0]), so max_travel/2 is the centre.
+    static bool start_pos_set = false;
+    if(!start_pos_set && settings.axis[X_AXIS].steps_per_mm > 0.0f) {
+        start_pos_set = true;
+        uint_fast8_t i = 0;
+        do {
+            float pos_mm = i == Z_AXIS ? -10.0f : settings.axis[i].max_travel / 2.0f;
+            int32_t steps = (int32_t)(pos_mm * settings.axis[i].steps_per_mm);
+            sys.position[i] = steps;
+            sim_axis_pos[i] = steps;
+        } while(++i < N_AXIS);
+    }
+
     //platform_sleep(0); // yield needed? or simply trust the OS's thread scheduler...
     on_execute_realtime(state);
 }
