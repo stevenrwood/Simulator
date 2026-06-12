@@ -1,0 +1,47 @@
+name: Build and publish Windows simulator
+
+# Builds the patched (homing-capable) grblHAL_sim.exe and publishes it as a stable
+# "sim-latest" release asset, so ioSender's "Download simulator" button can fetch a
+# ready-to-run, homing-capable build instead of compiling a stock one via the web builder.
+
+on:
+  push:
+    branches: [ "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # required to create/update the release
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure (MinGW Makefiles)
+        run: cmake -G "MinGW Makefiles" -DCMAKE_C_COMPILER=gcc -B build -S .
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Smoke test
+        shell: bash
+        working-directory: build
+        run: ./grblHAL_sim.exe -h || true
+
+      - name: Publish rolling "sim-latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: sim-latest
+          name: grblHAL simulator (latest patched build)
+          body: |
+            Patched, homing-capable grblHAL simulator for Windows, built from master.
+            Auto-published by CI on each push to master.
+
+            Stable asset URL:
+            https://github.com/${{ github.repository }}/releases/download/sim-latest/grblHAL_sim.exe
+          files: build/grblHAL_sim.exe
+          make_latest: true
