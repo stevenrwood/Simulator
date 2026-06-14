@@ -672,6 +672,14 @@ bool driver_init ()
     fs_littlefs_mount(LITTLEFS_MOUNT_DIR, sim_littlefs_hal());
 #endif
 
+#if SDCARD_ENABLE || LITTLEFS_ENABLE
+    // Advertise persistent storage (matches a real board that reports SD in $I NEWOPT). Without this
+    // grbllib.c clears settings.macro_atc_flags.error_on_no_macro ($675 bit 1) on every boot - it gates
+    // that flag on hal.driver_cap.sd_card only - so the ATC-macro flow ($675=2 -> ATC=0 when tc.macro is
+    // missing) could never be set/persisted on this littlefs-only build, blocking ATC testing.
+    hal.driver_cap.sd_card = On;
+#endif
+
     // no need to move version check before init - compiler will fail any signature mismatch for existing entries
     return hal.version == 10;
 }
