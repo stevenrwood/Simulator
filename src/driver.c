@@ -31,6 +31,11 @@
 #include "grbl/hal.h"
 #include "grbl/state_machine.h"
 
+#if LITTLEFS_ENABLE
+#include "littlefs_hal.h"
+#include "sdcard/fs_littlefs.h"
+#endif
+
 #ifndef SQUARING_ENABLED
 #define SQUARING_ENABLED 0
 #endif
@@ -644,6 +649,24 @@ bool driver_init ()
     hal.driver_cap.control_pull_up = On;
     hal.driver_cap.limits_pull_up = On;
     hal.driver_cap.probe_pull_up = On;
+
+    // Filesystem plugins ($F/$FI/$F<=, YModem, O<name> CALL macros, ATC tool change).
+    // fs_stream_init() also runs fs_macros_init(), which registers the vfs on_mount hook
+    // (atc_macros_attach); it must run BEFORE the littlefs mount below so that hook fires on the
+    // initial mount and ATC is detected at boot when tc.macro is present. (Called directly rather
+    // than via plugins_init.h, which also references the weak my_plugin_init that the archive linker
+    // would not pull, and a host of plugins not built for the simulator.)
+#if SDCARD_ENABLE || LITTLEFS_ENABLE == 2
+    extern void fs_stream_init (void);
+    fs_stream_init();
+#endif
+
+#if LITTLEFS_ENABLE
+#ifndef LITTLEFS_MOUNT_DIR
+#define LITTLEFS_MOUNT_DIR (LITTLEFS_ENABLE == 2 ? "/" : "/littlefs")
+#endif
+    fs_littlefs_mount(LITTLEFS_MOUNT_DIR, sim_littlefs_hal());
+#endif
 
     // no need to move version check before init - compiler will fail any signature mismatch for existing entries
     return hal.version == 10;
