@@ -28,6 +28,7 @@
 #define IMG_FILE    "littlefs.img"      // host-side persistence (created next to the working dir)
 
 static uint8_t fs[FS_SIZE];
+static FILE *img = NULL;   // backing file kept open for the process lifetime (see sim_littlefs_hal)
 
 static int sim_hal_read (const struct lfs_config *c, lfs_block_t block, lfs_off_t offset, void *buffer, lfs_size_t size)
 {
@@ -36,16 +37,34 @@ static int sim_hal_read (const struct lfs_config *c, lfs_block_t block, lfs_off_
     return LFS_ERR_OK;
 }
 
+// Persist only the touched region to the backing file. The previous implementation rewrote the whole
+// 512 KB image (fopen/fwrite/fclose) on every sync, and littlefs syncs many times per file operation -
+// on Windows each close also triggers an AV scan of the image, so a small upload took minutes. Keeping
+// the file open and writing just the changed bytes here makes prog/erase cheap and sync a plain flush.
 static int sim_hal_prog (const struct lfs_config *c, lfs_block_t block, lfs_off_t offset, const void *buffer, lfs_size_t size)
 {
-    memcpy(fs + block * c->block_size + offset, buffer, size);
+    size_t pos = block * c->block_size + offset;
+
+    memcpy(fs + pos, buffer, size);
+
+    if (img) {
+        fseek(img, (long)pos, SEEK_SET);
+        fwrite(fs + pos, 1, size, img);
+    }
 
     return LFS_ERR_OK;
 }
 
 static int sim_hal_erase (const struct lfs_config *c, lfs_block_t block)
 {
-    memset(fs + block * c->block_size, 0xFF, c->block_size);
+    size_t pos = block * c->block_size;
+
+    memset(fs + pos, 0xFF, c->block_size);
+
+    if (img) {
+        fseek(img, (long)pos, SEEK_SET);
+        fwrite(fs + pos, 1, c->block_size, img);
+    }
 
     return LFS_ERR_OK;
 }
@@ -54,11 +73,8 @@ static int sim_hal_sync (const struct lfs_config *c)
 {
     (void)c;
 
-    FILE *f = fopen(IMG_FILE, "wb");
-    if (f) {
-        fwrite(fs, 1, FS_SIZE, f);
-        fclose(f);
-    }
+    if (img)
+        fflush(img);
 
     return LFS_ERR_OK;
 }
@@ -81,15 +97,22 @@ struct lfs_config *sim_littlefs_hal (void)
         .block_cycles = 500
     };
 
-    // Start from the erased state, then overlay any persisted image so files
-    // (uploaded macros, atc.sum, ...) survive simulator restarts.
+    // Start from the erased state, then overlay any persisted image so files (uploaded macros, atc.sum,
+    // ...) survive simulator restarts. The backing file is kept open ("r+b") for the rest of the run so
+    // prog/erase can write just the changed bytes; on first run it is created and pre-filled with the
+    // erased image.
     memset(fs, 0xFF, FS_SIZE);
 
-    FILE *f = fopen(IMG_FILE, "rb");
-    if (f) {
-        if (fread(fs, 1, FS_SIZE, f) != FS_SIZE)
-            memset(fs, 0xFF, FS_SIZE);   // partial/short image - treat as fresh
-        fclose(f);
+    if ((img = fopen(IMG_FILE, "r+b"))) {
+        if (fread(fs, 1, FS_SIZE, img) != FS_SIZE) {
+            memset(fs, 0xFF, FS_SIZE);   // partial/short image - treat as fresh and rewrite it
+            fseek(img, 0, SEEK_SET);
+            fwrite(fs, 1, FS_SIZE, img);
+            fflush(img);
+        }
+    } else if ((img = fopen(IMG_FILE, "w+b"))) {
+        fwrite(fs, 1, FS_SIZE, img);   // fresh image
+        fflush(img);
     }
 
     return &cfg;
