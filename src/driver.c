@@ -680,6 +680,14 @@ bool driver_init ()
     hal.driver_cap.sd_card = On;
 #endif
 
+    // Enable $REBOOT (system.c reboot_system returns error:3 when hal.reboot is NULL). sim_reboot
+    // re-execs the process - a fresh boot that re-mounts littlefs, so an uploaded tc.macro brings ATC
+    // online without a manual restart.
+    {
+        extern void sim_reboot (void);
+        hal.reboot = sim_reboot;
+    }
+
     // no need to move version check before init - compiler will fail any signature mismatch for existing entries
     return hal.version == 10;
 }

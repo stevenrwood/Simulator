@@ -30,6 +30,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #ifdef WIN32
+#include <process.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #else
@@ -175,6 +176,24 @@ static void exithandler (int signum)
     eeprom_close();
 }
 
+// Original argv, captured in main() before the option parser advances the pointer, so the restart at
+// the end of main() can re-execute with the same arguments.
+static char **g_argv = NULL;
+static int g_reboot = 0;   // set by sim_reboot; main() re-launches after its socket teardown
+
+// hal.reboot handler: emulate a controller hard reset. Just request a restart here - do NOT spawn or
+// touch sockets: this runs on the grbl thread while the main thread owns the socket loop, and tearing
+// them down from under it crashed the main thread (WSAENOTSOCK), while spawning a child whose bind raced
+// the still-open listen socket gave an intermittent dead listener. Signalling the loop to exit lets
+// main() do an ordered teardown and then re-launch, so the fresh process re-binds the port cleanly. That
+// fresh boot reloads EEPROM.DAT + littlefs.img and re-runs grbl init, so a tc.macro uploaded since boot
+// is detected at the littlefs mount and ATC comes online.
+void sim_reboot (void)
+{
+    g_reboot = 1;
+    sim.exit = exit_OK;   // break sim_loop; main() performs the relaunch
+}
+
 int main(int argc, char *argv[])
 {
     int positional_args = 0;
@@ -194,6 +213,7 @@ int main(int argc, char *argv[])
     set_eeprom_name("EEPROM.DAT");
 
     progname = argv[0];
+    g_argv = argv;   // capture before the parser below advances argv (for sim_reboot)
 
     while (argc > 1) {
         argv++; argc--;
@@ -341,6 +361,11 @@ int main(int argc, char *argv[])
             exit(-5);
         }
 
+        {   // allow an immediate re-bind after a $REBOOT re-exec (old socket may linger in TIME_WAIT)
+            int reuse = 1;
+            setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse, sizeof(reuse));
+        }
+
         if (bind(socket_fd, result->ai_addr, (int)result->ai_addrlen) == SOCKET_ERROR) {
             freeaddrinfo(result);
             closesocket(socket_fd);
@@ -371,6 +396,11 @@ int main(int argc, char *argv[])
         server_addr.sin_family = AF_INET;
         server_addr.sin_addr.s_addr = INADDR_ANY;
         server_addr.sin_port = htons(args.port);
+
+        {   // allow an immediate re-bind after a $REBOOT re-exec (old socket may linger in TIME_WAIT)
+            int reuse = 1;
+            setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        }
 
         if (bind(socket_fd, (struct sockaddr *) &server_addr, addrlen) < 0) {
             printf("Fatal: Unable to bind socket.\n");
@@ -436,12 +466,33 @@ int main(int argc, char *argv[])
 
     if(args.port) {
 #ifdef WIN32
+        if(sim.socket_fd != INVALID_SOCKET)
+            closesocket(sim.socket_fd);
         closesocket(socket_fd);
         WSACleanup();
 #else
         if(sim.socket_fd)
             close(sim.socket_fd);
         close(socket_fd);
+#endif
+    }
+
+    // $REBOOT requested (hal.reboot -> sim_reboot): the sockets above are now closed, so re-launch a
+    // fresh instance that re-binds the same port (SO_REUSEADDR covers the lingering TIME_WAIT). Done here,
+    // after teardown, rather than from the grbl thread - that avoids racing the child's bind against an
+    // open listen socket. The new process re-mounts littlefs, so an uploaded tc.macro brings ATC online.
+    if(g_reboot && args.port) {
+#ifdef WIN32
+        char cmdline[2048];
+        STARTUPINFOA si = { sizeof(si) };
+        PROCESS_INFORMATION pi = {0};
+        strncpy(cmdline, GetCommandLineA(), sizeof(cmdline) - 1);
+        cmdline[sizeof(cmdline) - 1] = '\0';
+        CreateProcessA(NULL, cmdline, NULL, NULL, FALSE,
+                       DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, NULL, NULL, &si, &pi);
+#else
+        if(g_argv)
+            execv(g_argv[0], g_argv);   // in-place re-exec works cleanly on POSIX
 #endif
     }
 
