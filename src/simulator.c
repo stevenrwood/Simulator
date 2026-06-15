@@ -174,32 +174,23 @@ void sim_serial_out (uint8_t data)
     }
 }
 
-// Print serial output to sim.socket_fd stream
+// Print serial output to sim.socket_fd stream.
+// Send each byte as it is produced rather than line-buffering until a newline: the firmware emits
+// binary protocol bytes (e.g. the YModem ACK/'C' handshake) with no trailing newline, and buffering
+// those stalled them here forever - the host hung waiting for a response that never went out. The OS
+// coalesces these small localhost sends at the TCP layer, so throughput is unaffected.
 void sim_socket_out (uint8_t data)
 {
-    static uint8_t buf[128] = {0};
-    static uint8_t len = 0;
-    static bool continuation = 0;
-
-    buf[len++] = data;
-    // print when we get to newline or run out of buffer
-    if(data == '\n' || data == '\r' || len >= 127) {
-//        if (args.comment_char && !continuation)
-//            fprintf(args.serial_out_file, "%c ", args.comment_char);
 #ifdef WIN32
-        if(sim.socket_fd != INVALID_SOCKET) {
-            if(send(sim.socket_fd, buf, len, 0) == SOCKET_ERROR)
-                exit(-10);
-        }
-#else
-        if(sim.socket_fd) {
-            if(write(sim.socket_fd, buf, len) < 0)
-                exit(-10);
-        }
-#endif
-        // don't print comment on next line if we are just printing to avoid buffer overflow
-        continuation = (len >= 128); 
-        len = 0;
+    if(sim.socket_fd != INVALID_SOCKET) {
+        if(send(sim.socket_fd, (const char *)&data, 1, 0) == SOCKET_ERROR)
+            exit(-10);
     }
+#else
+    if(sim.socket_fd) {
+        if(write(sim.socket_fd, &data, 1) < 0)
+            exit(-10);
+    }
+#endif
 }
 

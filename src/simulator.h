@@ -43,7 +43,7 @@ typedef struct sim_vars {
 #else
     int socket_fd;
 #endif
-    uint8_t (*getchar)(void);
+    int (*getchar)(void);   // returns 0-255 for a byte, or -1 when no data is available (NUL is a valid byte)
     void (*putchar)(uint8_t);
     sim_hook_fp on_init;
     sim_hook_fp on_tick;

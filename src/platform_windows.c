@@ -96,10 +96,10 @@ void platform_kill_thread(plat_thread_t* th)
 }
 
 //return char if one available.
-uint8_t platform_poll_stdin()
+int platform_poll_stdin()
 {
     if (_kbhit())
-        return getch();
+        return (uint8_t)getch();
 
-    return 0;
+    return -1;  // no key pressed (NUL is a valid byte, so it cannot double as the "no data" sentinel)
 }
