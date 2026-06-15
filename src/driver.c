@@ -47,13 +47,13 @@ static on_execute_realtime_ptr on_execute_realtime;
 // axis per stepper pulse (see stepperPulseStart) and read by sim_update_inputs().
 static int32_t sim_axis_pos[N_AXIS] = {0};
 
-// Simulated probe: the probe input trips when the Z axis has descended PROBE_TRIP_MM (a positive
-// magnitude) below where probing started. Matches a touch-off that triggers after a fixed approach;
-// set to your sensor's trip distance (e.g. 4.0). Probe start is captured the first tick a probe move
-// is active (see sim_update_inputs).
-#define PROBE_AXIS   Z_AXIS
+// Simulated probe: the probe input trips once the controlled point has travelled PROBE_TRIP_MM (a
+// positive magnitude) from where the probe cycle started, along ANY axis - so it works for a Z
+// touch-off / toolsetter (G38.2 Z-...) and equally for the X and Y moves of a 3D corner probe
+// (probe_tfl). Matches a touch sensor that triggers after a fixed approach; set to your sensor's trip
+// distance. The per-axis start position is captured when the cycle arms (see probeConfigureInvertMask).
 #define PROBE_TRIP_MM 4.0f
-static int32_t sim_probe_start;
+static int32_t sim_probe_start[N_AXIS];
 static bool sim_probe_armed = false;
 
 // To keep $H fast in the sim (it steps at a fraction of real time during the homing loop, so driving
@@ -330,12 +330,18 @@ void sim_update_inputs (void)
     mcu_gpio_in(&gpio[LIMITS_PORT0], trip ^ settings.limits.invert.mask, AXES_BITMASK);
 
     // Probe: once armed (by probeConfigureInvertMask at the start of a probe cycle) trip after the
-    // probe axis has travelled PROBE_TRIP_MM from where the cycle started, in either direction.
+    // controlled point has travelled PROBE_TRIP_MM from where the cycle started along ANY axis, in
+    // either direction - so X/Y/Z probe moves all trip (3D corner probe as well as a Z toolsetter).
     if(sim_probe_armed) {
-        int32_t moved = sim_axis_pos[PROBE_AXIS] - sim_probe_start;
-        if(moved < 0)
-            moved = -moved;
-        bool tripped = moved >= (int32_t)(PROBE_TRIP_MM * settings.axis[PROBE_AXIS].steps_per_mm);
+        bool tripped = false;
+        uint_fast8_t a = 0;
+        do {
+            int32_t moved = sim_axis_pos[a] - sim_probe_start[a];
+            if(moved < 0)
+                moved = -moved;
+            if(moved >= (int32_t)(PROBE_TRIP_MM * settings.axis[a].steps_per_mm))
+                tripped = true;
+        } while(!tripped && ++a < N_AXIS);
         mcu_gpio_in(&gpio[PROBE_PORT], PROBE_CONNECTED_BIT | (tripped ? PROBE_BIT : 0), PROBE_MASK);
     }
 }
@@ -360,11 +366,14 @@ static void probeConfigureInvertMask (bool is_probe_away, bool probing)
   if (is_probe_away)
       probe_invert ^= is_probe_away;
 
-  // Arm the simulated probe at the start of a probe cycle (capture where the probe axis starts);
-  // release the trigger when the cycle ends.
+  // Arm the simulated probe at the start of a probe cycle (capture the start position of every axis so
+  // the trip can be measured along whichever axis the probe moves); release the trigger when it ends.
   if (probing) {
       if (!sim_probe_armed) {
-          sim_probe_start = sim_axis_pos[PROBE_AXIS];
+          uint_fast8_t a = 0;
+          do {
+              sim_probe_start[a] = sim_axis_pos[a];
+          } while(++a < N_AXIS);
           sim_probe_armed = true;
       }
   } else {
