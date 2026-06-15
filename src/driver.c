@@ -30,6 +30,7 @@
 
 #include "grbl/hal.h"
 #include "grbl/state_machine.h"
+#include "grbl/ngc_params.h"
 
 #ifndef SQUARING_ENABLED
 #define SQUARING_ENABLED 0
@@ -47,14 +48,65 @@ static on_execute_realtime_ptr on_execute_realtime;
 // axis per stepper pulse (see stepperPulseStart) and read by sim_update_inputs().
 static int32_t sim_axis_pos[N_AXIS] = {0};
 
-// Simulated probe: the probe input trips once the controlled point has travelled PROBE_TRIP_MM (a
-// positive magnitude) from where the probe cycle started, along ANY axis - so it works for a Z
-// touch-off / toolsetter (G38.2 Z-...) and equally for the X and Y moves of a 3D corner probe
-// (probe_tfl). Matches a touch sensor that triggers after a fixed approach; set to your sensor's trip
-// distance. The per-axis start position is captured when the cycle arms (see probeConfigureInvertMask).
-#define PROBE_TRIP_MM 4.0f
-static int32_t sim_probe_start[N_AXIS];
+// Simulated probe targets - real surfaces the probe trips against, so probed coordinates are physically
+// meaningful (a 3D corner find yields an actual corner, a toolsetter yields a repeatable reference).
+// Three solids in machine mm, positioned from the controller's own G28 / G59.3 offsets - read when each
+// probe cycle arms, so they track the operator's setup the way probe_tfl / tc.macro expect:
+//   - Spoilboard: the table plane near the bottom of Z travel (probed at G28, clear of the stock).
+//   - Stock block: sits on the spoilboard, its TFL corner STOCK_INSET inside G28 in X and Y. probe_tfl
+//     finds its top (Z down), left face (X) and front face (Y).
+//   - Toolsetter puck: centred on G59.3, top PUCK_DROP below the G59.3 Z origin. M6 T8 probes its top.
+// The probe trips whenever the controlled point enters any of these solids during a probe cycle.
+#define STOCK_INSET   15.0f   // stock TFL corner this far inside G28 in X and Y (macro allows 10-30 mm)
+#define STOCK_SIZE    60.0f   // stock footprint in X and Y
+#define STOCK_THICK   19.0f   // stock thickness above the spoilboard
+#define PUCK_RADIUS   10.0f   // toolsetter footprint half-width
+#define PUCK_DROP     10.0f   // puck top this far below the G59.3 Z origin
+#define SPOIL_LIFT     5.0f   // spoilboard this far above the bottom of Z travel
+
+typedef struct { float min[3], max[3]; } sim_box_t;
+
 static bool sim_probe_armed = false;
+static struct {
+    bool valid;
+    float spoil_z;
+    sim_box_t stock, puck;
+} probe_geom;
+
+static inline bool sim_in_box (const sim_box_t *b, const float *p)
+{
+    return p[X_AXIS] >= b->min[X_AXIS] && p[X_AXIS] <= b->max[X_AXIS] &&
+           p[Y_AXIS] >= b->min[Y_AXIS] && p[Y_AXIS] <= b->max[Y_AXIS] &&
+           p[Z_AXIS] >= b->min[Z_AXIS] && p[Z_AXIS] <= b->max[Z_AXIS];
+}
+
+// Build the probe targets from the live G28 (#5161/#5162) and G59.3 (#5381-#5383) offsets plus the Z
+// envelope. Called when a probe cycle arms so the surfaces always match the current setup.
+static void sim_compute_probe_geom (void)
+{
+    float g28x, g28y, g59x, g59y, g59z;
+
+    probe_geom.valid = ngc_param_get(5161, &g28x) && ngc_param_get(5162, &g28y) &&
+                       ngc_param_get(5381, &g59x) && ngc_param_get(5382, &g59y) && ngc_param_get(5383, &g59z);
+    if(!probe_geom.valid)
+        return;
+
+    probe_geom.spoil_z = settings.axis[Z_AXIS].max_travel + SPOIL_LIFT;   // max_travel is negative (envelope bottom)
+
+    probe_geom.stock.min[X_AXIS] = g28x + STOCK_INSET;
+    probe_geom.stock.min[Y_AXIS] = g28y + STOCK_INSET;
+    probe_geom.stock.min[Z_AXIS] = probe_geom.spoil_z;
+    probe_geom.stock.max[X_AXIS] = probe_geom.stock.min[X_AXIS] + STOCK_SIZE;
+    probe_geom.stock.max[Y_AXIS] = probe_geom.stock.min[Y_AXIS] + STOCK_SIZE;
+    probe_geom.stock.max[Z_AXIS] = probe_geom.spoil_z + STOCK_THICK;
+
+    probe_geom.puck.min[X_AXIS] = g59x - PUCK_RADIUS;
+    probe_geom.puck.min[Y_AXIS] = g59y - PUCK_RADIUS;
+    probe_geom.puck.min[Z_AXIS] = probe_geom.spoil_z;
+    probe_geom.puck.max[X_AXIS] = g59x + PUCK_RADIUS;
+    probe_geom.puck.max[Y_AXIS] = g59y + PUCK_RADIUS;
+    probe_geom.puck.max[Z_AXIS] = g59z - PUCK_DROP;
+}
 
 // To keep $H fast in the sim (it steps at a fraction of real time during the homing loop, so driving
 // the full max-travel to the switch is slow), the simulated carriage is parked this far from each home
@@ -329,19 +381,18 @@ void sim_update_inputs (void)
     // this an inverted ($5) axis reads asserted off the switch and homing's pull-off check fails (Alarm 8).
     mcu_gpio_in(&gpio[LIMITS_PORT0], trip ^ settings.limits.invert.mask, AXES_BITMASK);
 
-    // Probe: once armed (by probeConfigureInvertMask at the start of a probe cycle) trip after the
-    // controlled point has travelled PROBE_TRIP_MM from where the cycle started along ANY axis, in
-    // either direction - so X/Y/Z probe moves all trip (3D corner probe as well as a Z toolsetter).
-    if(sim_probe_armed) {
-        bool tripped = false;
-        uint_fast8_t a = 0;
-        do {
-            int32_t moved = sim_axis_pos[a] - sim_probe_start[a];
-            if(moved < 0)
-                moved = -moved;
-            if(moved >= (int32_t)(PROBE_TRIP_MM * settings.axis[a].steps_per_mm))
-                tripped = true;
-        } while(!tripped && ++a < N_AXIS);
+    // Probe: once armed (by probeConfigureInvertMask) trip when the controlled point enters a target
+    // solid - the stock block (top/left/front faces), the toolsetter puck, or the spoilboard plane.
+    // This reproduces a real touch: each face stops the probe at its actual position, so X/Y/Z corner
+    // finds and the Z toolsetter all work and yield meaningful coordinates.
+    if(sim_probe_armed && probe_geom.valid) {
+        // Use the controller's real machine position (the same coordinate the PRB report and the G28 /
+        // G59.3 offsets are in), NOT sim_axis_pos - that is an independent carriage tracker for limit
+        // simulation and is offset from machine coordinates after homing.
+        float p[N_AXIS];
+        system_convert_array_steps_to_mpos(p, sys.position);
+        bool tripped = sim_in_box(&probe_geom.stock, p) || sim_in_box(&probe_geom.puck, p) ||
+                       p[Z_AXIS] <= probe_geom.spoil_z;   // spoilboard: everywhere not over an object
         mcu_gpio_in(&gpio[PROBE_PORT], PROBE_CONNECTED_BIT | (tripped ? PROBE_BIT : 0), PROBE_MASK);
     }
 }
@@ -366,14 +417,11 @@ static void probeConfigureInvertMask (bool is_probe_away, bool probing)
   if (is_probe_away)
       probe_invert ^= is_probe_away;
 
-  // Arm the simulated probe at the start of a probe cycle (capture the start position of every axis so
-  // the trip can be measured along whichever axis the probe moves); release the trigger when it ends.
+  // Arm the simulated probe at the start of a probe cycle: snapshot the target geometry from the live
+  // G28 / G59.3 offsets so the surfaces match the current setup. Release the trigger when it ends.
   if (probing) {
       if (!sim_probe_armed) {
-          uint_fast8_t a = 0;
-          do {
-              sim_probe_start[a] = sim_axis_pos[a];
-          } while(++a < N_AXIS);
+          sim_compute_probe_geom();
           sim_probe_armed = true;
       }
   } else {
