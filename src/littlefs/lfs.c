@@ -151,6 +151,47 @@ static int lfs_bd_cmp(lfs_t *lfs,
     return LFS_CMP_EQ;
 }
 
+#ifdef LFS_CASE_INSENSITIVE
+// Case-insensitive variant of lfs_bd_cmp, used for directory name lookups (see lfs_dir_find_match) so
+// littlefs matches filenames without regard to case - matching the semantics of an SD card's FatFs, which
+// grblHAL's VFS treats interchangeably. e.g. a lookup for "CAL.MACRO" (g-code uppercases O-word labels,
+// so O<cal> CALL builds /CAL.macro) resolves a stored "cal.macro". Names are stored with their original
+// case; only the comparison is case-folded (ASCII A-Z).
+static int lfs_bd_cmp_ci(lfs_t *lfs,
+        const lfs_cache_t *pcache, lfs_cache_t *rcache, lfs_size_t hint,
+        lfs_block_t block, lfs_off_t off,
+        const void *buffer, lfs_size_t size) {
+    const uint8_t *data = buffer;
+    lfs_size_t diff = 0;
+
+    for (lfs_off_t i = 0; i < size; i += diff) {
+        uint8_t dat[8];
+
+        diff = lfs_min(size-i, sizeof(dat));
+        int res = lfs_bd_read(lfs,
+                pcache, rcache, hint-i,
+                block, off+i, &dat, diff);
+        if (res) {
+            return res;
+        }
+
+        for (lfs_size_t j = 0; j < diff; j++) {
+            uint8_t a = dat[j], b = data[i+j];
+            if (a >= 'A' && a <= 'Z') a += 'a' - 'A';
+            if (b >= 'A' && b <= 'Z') b += 'a' - 'A';
+            if (a != b) {
+                return a < b ? LFS_CMP_LT : LFS_CMP_GT;
+            }
+        }
+    }
+
+    return LFS_CMP_EQ;
+}
+#define LFS_NAME_CMP lfs_bd_cmp_ci
+#else
+#define LFS_NAME_CMP lfs_bd_cmp
+#endif
+
 #ifndef LFS_READONLY
 static int lfs_bd_flush(lfs_t *lfs,
         lfs_cache_t *pcache, lfs_cache_t *rcache, bool validate) {
@@ -1302,9 +1343,9 @@ static int lfs_dir_find_match(void *data,
     lfs_t *lfs = name->lfs;
     const struct lfs_diskoff *disk = buffer;
 
-    // compare with disk
+    // compare with disk (LFS_NAME_CMP is case-insensitive when LFS_CASE_INSENSITIVE is defined)
     lfs_size_t diff = lfs_min(name->size, lfs_tag_size(tag));
-    int res = lfs_bd_cmp(lfs,
+    int res = LFS_NAME_CMP(lfs,
             NULL, &lfs->rcache, diff,
             disk->block, disk->off, name->name, diff);
     if (res != LFS_CMP_EQ) {

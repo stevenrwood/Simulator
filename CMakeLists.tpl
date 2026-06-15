@@ -10,6 +10,10 @@ add_compile_definitions(F_CPU=16000000)
 # (no SD hardware on the sim). NGC_EXPRESSIONS_ENABLE=1 for O<name> CALL macros + the ATC flow.
 add_compile_definitions(LITTLEFS_ENABLE=2 SDCARD_ENABLE=0 NGC_EXPRESSIONS_ENABLE=1)
 
+# Case-insensitive littlefs name matching (vendored lfs.c) so O<name> CALL macros resolve regardless
+# of the g-code parser upper-casing the label - matching an SD card FatFs, which the VFS treats the same.
+add_compile_definitions(LFS_CASE_INSENSITIVE)
+
 include_directories(../src)
 
 include(../src/grbl/CMakeLists.txt)
