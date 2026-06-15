@@ -185,6 +185,10 @@ void simulate_serial (void)
 
     if((uart.tx_irq = uart.tx_irq_enable))
         isr[UART_IRQ]();
+    else {
+        extern void sim_socket_flush (void);
+        sim_socket_flush();   // TX line idle: emit the buffered output burst as one socket write
+    }
 
     if(uart.rx_irq_enable && !uart.rx_irq && hal.stream.get_rx_buffer_free() > 100) {
         int char_in = sim.getchar();

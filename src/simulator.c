@@ -175,22 +175,37 @@ void sim_serial_out (uint8_t data)
 }
 
 // Print serial output to sim.socket_fd stream.
-// Send each byte as it is produced rather than line-buffering until a newline: the firmware emits
-// binary protocol bytes (e.g. the YModem ACK/'C' handshake) with no trailing newline, and buffering
-// those stalled them here forever - the host hung waiting for a response that never went out. The OS
-// coalesces these small localhost sends at the TCP layer, so throughput is unaffected.
-void sim_socket_out (uint8_t data)
+// Buffer bytes and emit each transmit *burst* as a single socket write, flushed by sim_socket_flush()
+// once the UART TX line goes idle (see simulate_serial). The original code flushed only on a newline,
+// which stalled binary protocol bursts that carry none - e.g. the YModem ACK/'C' handshake - so the
+// host hung waiting for a reply that never went out. Flushing per burst (rather than per byte) keeps
+// multi-byte replies like ACK+'C' together in one segment, which is what real serial hardware delivers
+// and what the host's byte-at-a-time receive path expects.
+static uint8_t sock_buf[1024];
+static unsigned sock_len = 0;
+
+void sim_socket_flush (void)
 {
+    if(sock_len == 0)
+        return;
 #ifdef WIN32
     if(sim.socket_fd != INVALID_SOCKET) {
-        if(send(sim.socket_fd, (const char *)&data, 1, 0) == SOCKET_ERROR)
+        if(send(sim.socket_fd, (const char *)sock_buf, sock_len, 0) == SOCKET_ERROR)
             exit(-10);
     }
 #else
     if(sim.socket_fd) {
-        if(write(sim.socket_fd, &data, 1) < 0)
+        if(write(sim.socket_fd, sock_buf, sock_len) < 0)
             exit(-10);
     }
 #endif
+    sock_len = 0;
+}
+
+void sim_socket_out (uint8_t data)
+{
+    sock_buf[sock_len++] = data;
+    if(sock_len >= sizeof(sock_buf))    // safety: flush a burst larger than the buffer (e.g. a file dump)
+        sim_socket_flush();
 }
 
