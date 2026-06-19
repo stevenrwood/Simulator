@@ -663,7 +663,11 @@ bool driver_init ()
 
 #if LITTLEFS_ENABLE
 #ifndef LITTLEFS_MOUNT_DIR
-#define LITTLEFS_MOUNT_DIR (LITTLEFS_ENABLE == 2 ? "/" : "/littlefs")
+// Mount at /littlefs (as a real board does) even in the LITTLEFS_ENABLE==2 build, so ioSender's
+// absolute-path ATC provisioning (/littlefs/<name>.macro over YModem) and the named-sub resolver
+// (which searches /littlefs) line up. atc_macros_attach() keys tc_path off this mount path, so M6
+// and ATC detection follow automatically.
+#define LITTLEFS_MOUNT_DIR "/littlefs"
 #endif
     fs_littlefs_mount(LITTLEFS_MOUNT_DIR, sim_littlefs_hal());
 #endif
