@@ -39,4 +39,5 @@ build
 
 # run output
 *.out
-*.DATlittlefs.img
+*.DAT
+littlefs.img

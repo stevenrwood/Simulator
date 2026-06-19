@@ -29,6 +29,14 @@
 
 static uint8_t fs[FS_SIZE];
 static FILE *img = NULL;   // backing file kept open for the process lifetime (see sim_littlefs_hal)
+static int format_on_boot = 0;   // -format: discard any persisted image and reformat (see below)
+
+// Wired to the simulator's -format command-line option. Set before the littlefs mount so the next
+// sim_littlefs_hal() ignores any existing littlefs.img and presents a freshly erased device.
+void sim_littlefs_format_on_boot (void)
+{
+    format_on_boot = 1;
+}
 
 static int sim_hal_read (const struct lfs_config *c, lfs_block_t block, lfs_off_t offset, void *buffer, lfs_size_t size)
 {
@@ -103,7 +111,16 @@ struct lfs_config *sim_littlefs_hal (void)
     // erased image.
     memset(fs, 0xFF, FS_SIZE);
 
-    if ((img = fopen(IMG_FILE, "r+b"))) {
+    if (format_on_boot) {
+        // -format: discard any persisted filesystem and start from a freshly erased device. Truncating the
+        // backing file ("w+b") leaves an unformatted image, so fs_littlefs_mount's mount-then-format path
+        // reformats it clean - the same result as a first run, but explicitly wiping a stale image (e.g. one
+        // written by an older build using a different mount layout).
+        if ((img = fopen(IMG_FILE, "w+b"))) {
+            fwrite(fs, 1, FS_SIZE, img);
+            fflush(img);
+        }
+    } else if ((img = fopen(IMG_FILE, "r+b"))) {
         if (fread(fs, 1, FS_SIZE, img) != FS_SIZE) {
             memset(fs, 0xFF, FS_SIZE);   // partial/short image - treat as fresh and rewrite it
             fseek(img, 0, SEEK_SET);

@@ -46,6 +46,11 @@
 arg_vars_t args;
 const char* progname;
 
+#if LITTLEFS_ENABLE
+// Defined in littlefs_hal.c; -format requests a one-shot filesystem wipe + reformat at the littlefs mount.
+extern void sim_littlefs_format_on_boot (void);
+#endif
+
 #ifdef WIN32
 static SOCKET socket_fd;
 #else
@@ -70,6 +75,7 @@ void print_usage(const char* badarg)
       "    -p <port>          : port to open raw telnet communication.\n"
       "    -c<comment_char>   : character to print before each line from grbl.  default = '#'\n"
       "    -n                 : no comments before grbl response lines.\n"
+      "    -format            : wipe the littlefs filesystem (littlefs.img) and reformat it on boot.\n"
       "    -h                 : this help.\n"
       "\n"
       "  <time_step> and <block_file> can be specifed with option flags or positional parameters\n"
@@ -257,6 +263,16 @@ int main(int argc, char *argv[])
                 case 'p':  // Raw telnet port
                     argv++; argc--;
                     args.port = atoi(*argv);
+                    break;
+
+                case 'f':  // -format : wipe the littlefs filesystem and reformat it on boot
+                    if (strcmp(argv[0], "-format") != 0) {
+                        print_usage(*argv);
+                        return EXIT_FAILURE;
+                    }
+#if LITTLEFS_ENABLE
+                    sim_littlefs_format_on_boot();
+#endif
                     break;
 
                 case 'h':
