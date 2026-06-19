@@ -20,6 +20,7 @@
 */
 
 #include <string.h>
+#include <stdio.h>
 
 #include "mcu.h"
 #include "driver.h"
@@ -85,10 +86,116 @@ static inline bool sim_in_box (const sim_box_t *b, const float *p)
            p[Z_AXIS] >= b->min[Z_AXIS] && p[Z_AXIS] <= b->max[Z_AXIS];
 }
 
-// Build the probe targets from the live G28 (#5161/#5162) and G59.3 (#5381-#5383) offsets plus the Z
-// envelope. Called when a probe cycle arms so the surfaces always match the current setup.
+// ----- Explicit fixture setup (-setup <file>) ------------------------------------------------------
+// When a setup file is supplied the simulated fixtures are defined explicitly (in machine mm) instead of
+// being derived from the Z envelope + G28/G59.3. This decouples the spoilboard height from the mechanical
+// Z travel - the macros probe to fixed absolute depths, so the spoilboard must sit where they expect, not
+// at the bottom of a tall envelope. The same values drive the controller's G28/G30/G59.3 offsets (written
+// to NVS at boot, see sim_setup_apply_offsets) so the operator does not set them by hand.
+#define G28_CORNER_CLEAR 11.0f   // G28 sits this far outside the stock corner (-X/-Y); macro wants 10-30
+#define G28_Z_ABOVE_SPOIL 4.0f   // G28 Z this far above the spoilboard
+static struct {
+    bool active;
+    bool applied;            // offsets written to NVS yet (one-shot at boot)
+    float spoilboard_z;
+    float stock_corner_x, stock_corner_y;
+    float stock_size_x, stock_size_y, stock_size_z;
+    float toolsetter_x, toolsetter_y, toolsetter_height;
+    float toolchange_x, toolchange_y;
+} sim_setup = {0};
+
+// Parse a "-setup" file: "key = value" lines, '#' or ';' begin a comment. Returns false if it cannot be
+// opened. Unknown keys are ignored; missing keys keep their zero default. Called from main() at start-up.
+bool sim_setup_load (const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if(f == NULL)
+        return false;
+
+    memset(&sim_setup, 0, sizeof(sim_setup));
+
+    char line[160], key[64];
+    double val;
+    while(fgets(line, sizeof(line), f)) {
+        char *c;
+        if((c = strchr(line, '#'))) *c = '\0';
+        if((c = strchr(line, ';'))) *c = '\0';
+        if(sscanf(line, " %63[A-Za-z_] = %lf", key, &val) != 2)
+            continue;
+        float v = (float)val;
+        if(!strcmp(key, "spoilboard_z"))           sim_setup.spoilboard_z = v;
+        else if(!strcmp(key, "stock_corner_x"))    sim_setup.stock_corner_x = v;
+        else if(!strcmp(key, "stock_corner_y"))    sim_setup.stock_corner_y = v;
+        else if(!strcmp(key, "stock_size_x"))      sim_setup.stock_size_x = v;
+        else if(!strcmp(key, "stock_size_y"))      sim_setup.stock_size_y = v;
+        else if(!strcmp(key, "stock_size_z"))      sim_setup.stock_size_z = v;
+        else if(!strcmp(key, "toolsetter_x"))      sim_setup.toolsetter_x = v;
+        else if(!strcmp(key, "toolsetter_y"))      sim_setup.toolsetter_y = v;
+        else if(!strcmp(key, "toolsetter_height")) sim_setup.toolsetter_height = v;
+        else if(!strcmp(key, "toolchange_x"))      sim_setup.toolchange_x = v;
+        else if(!strcmp(key, "toolchange_y"))      sim_setup.toolchange_y = v;
+    }
+
+    fclose(f);
+    sim_setup.active = true;
+
+    return true;
+}
+
+// Write the controller's G28/G30/G59.3 coordinate offsets from the setup, so the macros (which read these
+// params) and the simulated fixtures agree without the operator setting them. One-shot, called once NVS is
+// ready (see sim_process_realtime).
+static void sim_setup_apply_offsets (void)
+{
+    coord_system_data_t d;
+
+    memset(&d, 0, sizeof(d));                                            // G28: just outside the stock corner
+    d.coord.values[X_AXIS] = sim_setup.stock_corner_x - G28_CORNER_CLEAR;
+    d.coord.values[Y_AXIS] = sim_setup.stock_corner_y - G28_CORNER_CLEAR;
+    d.coord.values[Z_AXIS] = sim_setup.spoilboard_z + G28_Z_ABOVE_SPOIL;
+    settings_write_coord_data(CoordinateSystem_G28, &d);
+
+    memset(&d, 0, sizeof(d));                                            // G59.3: toolsetter, Z = puck top
+    d.coord.values[X_AXIS] = sim_setup.toolsetter_x;
+    d.coord.values[Y_AXIS] = sim_setup.toolsetter_y;
+    d.coord.values[Z_AXIS] = sim_setup.spoilboard_z + sim_setup.toolsetter_height;
+    settings_write_coord_data(CoordinateSystem_G59_3, &d);
+
+    memset(&d, 0, sizeof(d));                                            // G30: tool-change position, Z = 0 (top)
+    d.coord.values[X_AXIS] = sim_setup.toolchange_x;
+    d.coord.values[Y_AXIS] = sim_setup.toolchange_y;
+    settings_write_coord_data(CoordinateSystem_G30, &d);
+
+    sim_setup.applied = true;
+}
+
+// Build the probe targets. With a -setup file the fixtures are taken verbatim from it; otherwise they are
+// derived from the live G28 (#5161/#5162) and G59.3 (#5381-#5383) offsets plus the Z envelope. Called when
+// a probe cycle arms so the surfaces always match the current setup.
 static void sim_compute_probe_geom (void)
 {
+    if(sim_setup.active) {
+
+        probe_geom.valid = true;
+        probe_geom.spoil_z = sim_setup.spoilboard_z;
+
+        probe_geom.stock.min[X_AXIS] = sim_setup.stock_corner_x;
+        probe_geom.stock.min[Y_AXIS] = sim_setup.stock_corner_y;
+        probe_geom.stock.min[Z_AXIS] = sim_setup.spoilboard_z;
+        probe_geom.stock.max[X_AXIS] = sim_setup.stock_corner_x + sim_setup.stock_size_x;
+        probe_geom.stock.max[Y_AXIS] = sim_setup.stock_corner_y + sim_setup.stock_size_y;
+        probe_geom.stock.max[Z_AXIS] = sim_setup.spoilboard_z + sim_setup.stock_size_z;
+
+        probe_geom.puck.min[X_AXIS] = sim_setup.toolsetter_x - PUCK_RADIUS;
+        probe_geom.puck.min[Y_AXIS] = sim_setup.toolsetter_y - PUCK_RADIUS;
+        probe_geom.puck.min[Z_AXIS] = sim_setup.spoilboard_z;
+        probe_geom.puck.max[X_AXIS] = sim_setup.toolsetter_x + PUCK_RADIUS;
+        probe_geom.puck.max[Y_AXIS] = sim_setup.toolsetter_y + PUCK_RADIUS;
+        probe_geom.puck.max[Z_AXIS] = sim_setup.spoilboard_z + sim_setup.toolsetter_height;
+
+        return;
+    }
+
     float g28x, g28y, g59x, g59y, g59z;
 
     probe_geom.valid = ngc_param_get(5161, &g28x) && ngc_param_get(5162, &g28y) &&
@@ -620,6 +727,11 @@ void sim_process_realtime (uint_fast16_t state)
             sim_axis_pos[i] = steps;
         } while(++i < N_AXIS);
     }
+
+    // One-shot, once settings/NVS are live: write the G28/G30/G59.3 offsets from the -setup file so the
+    // macros find them without the operator setting them by hand.
+    if(sim_setup.active && !sim_setup.applied && settings.axis[X_AXIS].steps_per_mm > 0.0f)
+        sim_setup_apply_offsets();
 
     //platform_sleep(0); // yield needed? or simply trust the OS's thread scheduler...
     on_execute_realtime(state);

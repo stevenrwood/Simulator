@@ -52,6 +52,9 @@ const char* progname;
 extern void sim_littlefs_format_on_boot (void);
 #endif
 
+// Defined in driver.c; -setup loads a fixture/probe setup file (spoilboard, stock, toolsetter, tool change).
+extern bool sim_setup_load (const char *path);
+
 #ifdef WIN32
 static SOCKET socket_fd;
 #else
@@ -77,6 +80,7 @@ void print_usage(const char* badarg)
       "    -c<comment_char>   : character to print before each line from grbl.  default = '#'\n"
       "    -n                 : no comments before grbl response lines.\n"
       "    -format            : wipe the littlefs filesystem (littlefs.img) and reformat it on boot.\n"
+      "    -setup <file>      : load fixture setup (spoilboard/stock/toolsetter/tool-change); sets G28/G30/G59.3.\n"
       "    -h                 : this help.\n"
       "\n"
       "  <time_step> and <block_file> can be specifed with option flags or positional parameters\n"
@@ -256,7 +260,14 @@ int main(int argc, char *argv[])
                     set_eeprom_name(*argv);
                     break;
 
-                case 's': //Step out file.
+                case 's':
+                    if (strcmp(argv[0], "-setup") == 0) {  // -setup <file> : fixture/probe setup config
+                        argv++; argc--;
+                        if (!sim_setup_load(*argv))
+                            printf("Warning: could not open setup file: %s\n", *argv);
+                        break;
+                    }
+                    //Step out file.
                     argv++; argc--;
                     args.step_out_file = fopen(*argv,"w");
                     if (!args.step_out_file) {
