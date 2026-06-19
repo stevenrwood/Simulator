@@ -96,8 +96,30 @@ add_executable(grblHAL_validator
     ${platform_SRC}
 )
 
-target_link_libraries(grblHAL_validator PRIVATE 
+target_link_libraries(grblHAL_validator PRIVATE
     m
     grbl
     ${platform_LIB}
 )
+
+# --- Auto-deploy to a sibling ioSender checkout --------------------------------------------------------
+# So a freshly built simulator is immediately the one ioSender loads, with no manual copy. The exe is
+# copied into ioSender's source simulator/ folder (the single canonical home its csproj CopySimulator
+# target pulls from) AND straight into the existing bin\...\simulator\ output folders so a running/next
+# debug session picks it up without rebuilding ioSender. Entirely skipped when there is no sibling
+# ioSender checkout next to this repo (e.g. on CI), so it never affects the release build.
+set(_iosender "${CMAKE_SOURCE_DIR}/../ioSender")
+if(EXISTS "${_iosender}/simulator")
+    set(_sim_dests
+        "${_iosender}/simulator"
+        "${_iosender}/ioSender XL/ioSender XL/bin/Debug/simulator"
+        "${_iosender}/ioSender XL/ioSender XL/bin/Release/simulator"
+        "${_iosender}/ioSender/ioSender/bin/Debug/simulator")
+    foreach(_d ${_sim_dests})
+        if(EXISTS "${_d}")
+            add_custom_command(TARGET grblHAL_sim POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:grblHAL_sim>" "${_d}/grblHAL_sim.exe"
+                COMMENT "Deploy grblHAL_sim.exe -> ${_d}")
+        endif()
+    endforeach()
+endif()
