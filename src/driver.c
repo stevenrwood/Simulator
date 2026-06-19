@@ -91,7 +91,8 @@ static inline bool sim_in_box (const sim_box_t *b, const float *p)
 // being derived from the Z envelope + G28/G59.3. This decouples the spoilboard height from the mechanical
 // Z travel - the macros probe to fixed absolute depths, so the spoilboard must sit where they expect, not
 // at the bottom of a tall envelope. The same values drive the controller's G28/G30/G59.3 offsets (written
-// to NVS at boot, see sim_setup_apply_offsets) so the operator does not set them by hand.
+// to NVS at boot, see sim_setup_apply_offsets) so the operator does not set them by hand: G28 = stock corner
+// less a clearance (Z just above the spoilboard), G59.3 = toolsetter X/Y at Z0, G30 = tool-change X/Y at Z0.
 #define G28_CORNER_CLEAR 11.0f   // G28 sits this far outside the stock corner (-X/-Y); macro wants 10-30
 #define G28_Z_ABOVE_SPOIL 4.0f   // G28 Z this far above the spoilboard
 static struct {
@@ -155,11 +156,10 @@ static void sim_setup_apply_offsets (void)
     d.coord.values[Z_AXIS] = sim_setup.spoilboard_z + G28_Z_ABOVE_SPOIL;
     settings_write_coord_data(CoordinateSystem_G28, &d);
 
-    memset(&d, 0, sizeof(d));                                            // G59.3: toolsetter, Z = puck top
-    d.coord.values[X_AXIS] = sim_setup.toolsetter_x;
-    d.coord.values[Y_AXIS] = sim_setup.toolsetter_y;
-    d.coord.values[Z_AXIS] = sim_setup.spoilboard_z + sim_setup.toolsetter_height;
-    settings_write_coord_data(CoordinateSystem_G59_3, &d);
+    memset(&d, 0, sizeof(d));                                            // G59.3: toolsetter X/Y, Z = 0 (top)
+    d.coord.values[X_AXIS] = sim_setup.toolsetter_x;                     // for max tool clearance approaching it;
+    d.coord.values[Y_AXIS] = sim_setup.toolsetter_y;                     // the puck SURFACE stays at spoilboard_z
+    settings_write_coord_data(CoordinateSystem_G59_3, &d);              // + toolsetter_height (see probe geom).
 
     memset(&d, 0, sizeof(d));                                            // G30: tool-change position, Z = 0 (top)
     d.coord.values[X_AXIS] = sim_setup.toolchange_x;
