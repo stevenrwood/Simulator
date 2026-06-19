@@ -56,6 +56,13 @@ extern void sim_littlefs_format_on_boot (void);
 // Defined in driver.c; -setup loads a fixture/probe setup file (spoilboard, stock, toolsetter, tool change).
 extern bool sim_setup_load (const char *path);
 
+static int file_exists (const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if(f) { fclose(f); return 1; }
+    return 0;
+}
+
 #ifdef WIN32
 static SOCKET socket_fd;
 #else
@@ -77,12 +84,14 @@ void print_usage(const char* badarg)
       "    -b <block file>    : file to report each block executed.  default = stdout\n"
       "    -s <step file>     : file to report each step executed.  default = stderr\n"
       "    -e <EEPROM file>   : file containing grblHAL settings.  default = EEPROM.DAT\n"
-      "    -p <port>          : port to open raw telnet communication.\n"
+      "    -p <port>          : port to open raw telnet communication.  default = 23.\n"
       "    -c<comment_char>   : character to print before each line from grbl.  default = '#'\n"
       "    -n                 : no comments before grbl response lines.\n"
       "    -format            : wipe the littlefs filesystem (littlefs.img) and reformat it on boot.\n"
       "    -setup <file>      : load fixture setup (spoilboard/stock/toolsetter/tool-change); sets G28/G30/G59.3.\n"
-      "    -view              : open a 3D machine view window (envelope, fixtures, live tool head).\n"
+      "                         default: sim_setup.cfg next to the exe if present.\n"
+      "    -view              : open the 3D machine view window (default; envelope, fixtures, live tool head).\n"
+      "    -headless          : run without the 3D machine view window.\n"
       "    -h                 : this help.\n"
       "\n"
       "  <time_step> and <block_file> can be specifed with option flags or positional parameters\n"
@@ -213,6 +222,7 @@ void sim_reboot (void)
 int main(int argc, char *argv[])
 {
     int positional_args = 0;
+    int want_view = 1, setup_given = 0, eeprom_given = 0;   // standalone defaults (see after the arg loop)
 
     //defaults
     args.step_out_file = stderr;
@@ -275,6 +285,7 @@ int main(int argc, char *argv[])
                 case 'e': //EEPROM file
                     argv++; argc--;
                     set_eeprom_name(*argv);
+                    eeprom_given = 1;
                     break;
 
                 case 's':
@@ -282,6 +293,7 @@ int main(int argc, char *argv[])
                         argv++; argc--;
                         if (!sim_setup_load(*argv))
                             printf("Warning: could not open setup file: %s\n", *argv);
+                        setup_given = 1;
                         break;
                     }
                     //Step out file.
@@ -324,15 +336,19 @@ int main(int argc, char *argv[])
 #endif
                     break;
 
-                case 'v':  // -view : open the 3D machine view window
+                case 'v':  // -view : open the 3D machine view window (now the default; kept for compatibility)
                     if (strcmp(argv[0], "-view") != 0) {
                         print_usage(*argv);
                         return EXIT_FAILURE;
                     }
-                    sim_view_start();
+                    want_view = 1;
                     break;
 
                 case 'h':
+                    if (strcmp(argv[0], "-headless") == 0) {  // -headless : run without the 3D window
+                        want_view = 0;
+                        break;
+                    }
                     print_usage(NULL);
                     return EXIT_SUCCESS;
 
@@ -365,6 +381,18 @@ int main(int argc, char *argv[])
             }
         }
     }
+
+    // Standalone defaults: the simulator is now launched directly by the user (ioSender just connects to it
+    // as a network target), so a bare launch should be useful on its own - listen for a client, open the 3D
+    // view, and pick up a setup/EEPROM sitting next to the exe. Explicit -p / -setup / -e / -headless override.
+    if(args.port == 0)
+        args.port = 23;
+    if(!setup_given && file_exists("sim_setup.cfg"))
+        sim_setup_load("sim_setup.cfg");
+    if(!eeprom_given && file_exists("MyMachine.DAT"))
+        set_eeprom_name("MyMachine.DAT");
+    if(want_view)
+        sim_view_start();
 
     // Make sure the output streams are flushed immediately.
     // This is important when using the simulator inside another application in parallel
