@@ -28,8 +28,18 @@ bool sim_view_active (void);
 // Publish the static fixture/envelope geometry (call once settings + setup are live).
 void sim_view_set_geometry (const sim_view_geometry_t *g);
 
-// Publish the live tool tip position in machine coordinates (call each realtime tick).
+// Publish the live tool tip position in machine coordinates (call each realtime tick). When the stock
+// heightmap is active this also carves material the cutter has passed through (see sim_view_set_tool_geometry).
 void sim_view_set_tool (float x, float y, float z);
+
+// Cutter shape for the material-removal carve.
+typedef enum { SIM_TOOL_FLAT = 0, SIM_TOOL_BALL = 1, SIM_TOOL_VBIT = 2 } sim_tool_shape_t;
+
+// Publish the active cutter geometry (diameter mm, shape, V-bit included angle deg) used to carve the stock.
+void sim_view_set_tool_geometry (float diameter, int shape, float vangle);
+
+// Reset the stock heightmap back to an uncut block (e.g. before re-running a job).
+void sim_view_reset_stock (void);
 
 // Publish the latest controller [MSG:...] line for the status line at the bottom of the view.
 void sim_view_set_message (const char *s);

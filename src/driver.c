@@ -257,6 +257,95 @@ void sim_setup_set_values (const sim_setup_values_t *in)
     view_geom_pushed = false;
 }
 
+// ----- Tool table (for the material-removal carve) -------------------------------------------------
+// grblHAL's tool_data_t has no cutter diameter/shape we can rely on (radius is "currently unsupported"
+// and N_TOOLS is 0 here), so the cutter geometry is supplied by the gcode itself as comment lines the CAM
+// post emits near the top of the program:  (TOOL T=1 D=6.35 TYPE=FLAT)  /  (TOOL T=3 D=12.7 TYPE=VBIT A=60)
+// These are parsed via grbl.on_gcode_comment; real controllers ignore them. The active tool is tracked via
+// the tool-change hooks, and its diameter/shape are pushed to the 3D view which carves the stock heightmap.
+#define SIM_MAX_TOOL 64
+typedef struct {
+    bool  defined;
+    float diameter;             // mm
+    int   shape;                // sim_tool_shape_t
+    float vangle;               // V-bit included angle (deg)
+} sim_tool_t;
+static sim_tool_t sim_tools[SIM_MAX_TOOL + 1];
+static volatile int sim_active_tool = -1;
+
+static on_gcode_message_ptr on_gcode_comment;   // chained (on_gcode_comment shares the message ptr type)
+static on_tool_changed_ptr  on_tool_changed;    // chained (core assigns this)
+static on_tool_selected_ptr on_tool_selected;   // chained
+
+// Push the active tool's diameter/shape to the 3D view (so subsequent moves carve with the right cutter).
+static void sim_push_tool_geometry (void)
+{
+    if(sim_active_tool >= 0 && sim_active_tool <= SIM_MAX_TOOL && sim_tools[sim_active_tool].defined) {
+        sim_tool_t *t = &sim_tools[sim_active_tool];
+        sim_view_set_tool_geometry(t->diameter, t->shape, t->vangle);
+    } else
+        sim_view_set_tool_geometry(0.0f, SIM_TOOL_FLAT, 0.0f);   // unknown tool -> no carving
+}
+
+// Parse a "(TOOL ...)" comment into the tool table. Receives the comment body without the parentheses,
+// e.g. "TOOL T=1 D=6.35 TYPE=FLAT". Unknown keys are ignored; case-insensitive.
+static status_code_t sim_on_gcode_comment (char *comment)
+{
+    char buf[120];
+    strncpy(buf, comment, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    char *tok = strtok(buf, " \t");
+    if(tok && !strcasecmp(tok, "TOOL")) {
+        int   id = -1, shape = SIM_TOOL_FLAT;
+        float dia = 0.0f, ang = 0.0f;
+        while((tok = strtok(NULL, " \t")) != NULL) {
+            char *eq = strchr(tok, '=');
+            if(eq == NULL)
+                continue;
+            *eq++ = '\0';
+            if(!strcasecmp(tok, "T"))         id = atoi(eq);
+            else if(!strcasecmp(tok, "D"))    dia = (float)atof(eq);
+            else if(!strcasecmp(tok, "A"))    ang = (float)atof(eq);
+            else if(!strcasecmp(tok, "TYPE")) {
+                if(!strcasecmp(eq, "BALL"))      shape = SIM_TOOL_BALL;
+                else if(!strcasecmp(eq, "VBIT")) shape = SIM_TOOL_VBIT;
+                else                             shape = SIM_TOOL_FLAT;   // FLAT / ENDMILL / unknown
+            }
+        }
+        if(id >= 0 && id <= SIM_MAX_TOOL) {
+            sim_tools[id].defined  = true;
+            sim_tools[id].diameter = dia;
+            sim_tools[id].shape    = shape;
+            sim_tools[id].vangle   = ang;
+            fprintf(stderr, "tool: T%d D=%.3f TYPE=%d A=%.1f\n", id, dia, shape, ang);
+            if(id == sim_active_tool)
+                sim_push_tool_geometry();
+        }
+    }
+
+    return on_gcode_comment ? on_gcode_comment(comment) : Status_OK;
+}
+
+static void sim_on_tool_selected (tool_data_t *tool)
+{
+    sim_active_tool = (int)tool->tool_id;
+    sim_push_tool_geometry();
+    if(on_tool_selected)
+        on_tool_selected(tool);
+}
+
+static void sim_on_tool_changed (tool_data_t *tool)
+{
+    sim_active_tool = (int)tool->tool_id;
+    fprintf(stderr, "tool: active T%d%s\n", sim_active_tool,
+            (sim_active_tool >= 0 && sim_active_tool <= SIM_MAX_TOOL && sim_tools[sim_active_tool].defined)
+                ? "" : " (no geometry - not carving)");
+    sim_push_tool_geometry();
+    if(on_tool_changed)
+        on_tool_changed(tool);
+}
+
 // Build the 3D view's static geometry (machine envelope + spoilboard/stock/puck) from the live settings
 // and the -setup fixtures, and hand it to sim_view. Called once settings are loaded (only when -view is on).
 static void sim_view_push_geometry (void)
@@ -908,6 +997,15 @@ bool driver_init ()
 
     on_execute_realtime = grbl.on_execute_realtime;
     grbl.on_execute_realtime = sim_process_realtime;
+
+    // Tool table comments + active-tool tracking feed the 3D view's material-removal carve. Chain the
+    // tool-change hooks (the core assigns on_tool_changed) so existing behaviour is preserved.
+    on_gcode_comment = grbl.on_gcode_comment;
+    grbl.on_gcode_comment = sim_on_gcode_comment;
+    on_tool_selected = grbl.on_tool_selected;
+    grbl.on_tool_selected = sim_on_tool_selected;
+    on_tool_changed = grbl.on_tool_changed;
+    grbl.on_tool_changed = sim_on_tool_changed;
 
     hal.stepper.wake_up = stepperWakeUp;
     hal.stepper.go_idle = stepperGoIdle;
