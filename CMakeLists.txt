@@ -76,6 +76,7 @@ add_executable(grblHAL_sim
     src/serial.c
     src/grbl_interface.c
     src/littlefs_hal.c
+    src/sim_view.c
     src/littlefs/lfs.c
     src/littlefs/lfs_util.c
     ${platform_SRC}
@@ -87,6 +88,11 @@ target_link_libraries(grblHAL_sim PRIVATE
     sdcard
     ${platform_LIB}
 )
+
+# The optional 3D machine view (-view) uses Win32 + OpenGL (system libraries only).
+if(WIN32)
+    target_link_libraries(grblHAL_sim PRIVATE opengl32 glu32 gdi32)
+endif()
 
 add_executable(grblHAL_validator 
     src/eeprom.c

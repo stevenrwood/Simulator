@@ -41,6 +41,7 @@
 #include "simulator.h"
 #include "eeprom.h"
 #include "grbl_interface.h"
+#include "sim_view.h"
 
 #include "grbl/grbllib.h"
 
@@ -81,6 +82,7 @@ void print_usage(const char* badarg)
       "    -n                 : no comments before grbl response lines.\n"
       "    -format            : wipe the littlefs filesystem (littlefs.img) and reformat it on boot.\n"
       "    -setup <file>      : load fixture setup (spoilboard/stock/toolsetter/tool-change); sets G28/G30/G59.3.\n"
+      "    -view              : open a 3D machine view window (envelope, fixtures, live tool head).\n"
       "    -h                 : this help.\n"
       "\n"
       "  <time_step> and <block_file> can be specifed with option flags or positional parameters\n"
@@ -320,6 +322,14 @@ int main(int argc, char *argv[])
 #if LITTLEFS_ENABLE
                     sim_littlefs_format_on_boot();
 #endif
+                    break;
+
+                case 'v':  // -view : open the 3D machine view window
+                    if (strcmp(argv[0], "-view") != 0) {
+                        print_usage(*argv);
+                        return EXIT_FAILURE;
+                    }
+                    sim_view_start();
                     break;
 
                 case 'h':

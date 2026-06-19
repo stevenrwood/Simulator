@@ -25,6 +25,7 @@
 #include "mcu.h"
 #include "driver.h"
 #include "serial.h"
+#include "sim_view.h"
 #include "eeprom.h"
 #include "grbl_eeprom_extensions.h"
 #include "platform.h"
@@ -179,6 +180,44 @@ static void sim_setup_apply_offsets (void)
             sim_setup.stock_corner_x - G28_CORNER_CLEAR, sim_setup.stock_corner_y - G28_CORNER_CLEAR,
             sim_setup.spoilboard_z + G28_Z_ABOVE_SPOIL,
             sim_setup.toolsetter_x, sim_setup.toolsetter_y, sim_setup.toolchange_x, sim_setup.toolchange_y);
+}
+
+// Build the 3D view's static geometry (machine envelope + spoilboard/stock/puck) from the live settings
+// and the -setup fixtures, and hand it to sim_view. Called once settings are loaded (only when -view is on).
+static void sim_view_push_geometry (void)
+{
+    sim_view_geometry_t g;
+    memset(&g, 0, sizeof(g));
+
+    uint_fast8_t i = 0;
+    do {
+        float travel = -settings.axis[i].max_travel;            // max_travel is stored negative
+        if(bit_istrue(settings.homing.dir_mask.value, bit(i))) {  // homes to the negative end -> extends +
+            g.env_min[i] = 0.0f; g.env_max[i] = travel;
+        } else {                                                  // -> extends negative
+            g.env_min[i] = -travel; g.env_max[i] = 0.0f;
+        }
+    } while(++i < 3);
+
+    if(sim_setup.active) {
+        g.have_fixtures = true;
+        g.spoil_z = sim_setup.spoilboard_z;
+        g.stock_min[X_AXIS] = sim_setup.stock_corner_x;
+        g.stock_min[Y_AXIS] = sim_setup.stock_corner_y;
+        g.stock_min[Z_AXIS] = sim_setup.spoilboard_z;
+        g.stock_max[X_AXIS] = sim_setup.stock_corner_x + sim_setup.stock_size_x;
+        g.stock_max[Y_AXIS] = sim_setup.stock_corner_y + sim_setup.stock_size_y;
+        g.stock_max[Z_AXIS] = sim_setup.spoilboard_z + sim_setup.stock_size_z;
+        g.puck_min[X_AXIS] = sim_setup.toolsetter_x - PUCK_RADIUS;
+        g.puck_min[Y_AXIS] = sim_setup.toolsetter_y - PUCK_RADIUS;
+        g.puck_min[Z_AXIS] = sim_setup.spoilboard_z;
+        g.puck_max[X_AXIS] = sim_setup.toolsetter_x + PUCK_RADIUS;
+        g.puck_max[Y_AXIS] = sim_setup.toolsetter_y + PUCK_RADIUS;
+        g.puck_max[Z_AXIS] = sim_setup.spoilboard_z + sim_setup.toolsetter_height;
+    } else
+        g.spoil_z = settings.axis[Z_AXIS].max_travel + SPOIL_LIFT;
+
+    sim_view_set_geometry(&g);
 }
 
 // Build the probe targets. With a -setup file the fixtures are taken verbatim from it; otherwise they are
@@ -744,6 +783,19 @@ void sim_process_realtime (uint_fast16_t state)
     // macros find them without the operator setting them by hand.
     if(sim_setup.active && !sim_setup.applied && settings.axis[X_AXIS].steps_per_mm > 0.0f)
         sim_setup_apply_offsets();
+
+    // Feed the optional 3D view (-view): push the static geometry once settings are live, then the live
+    // tool position every tick. Skipped entirely when -view is off (sim_view_active() == false).
+    if(sim_view_active()) {
+        static bool view_geom_pushed = false;
+        if(!view_geom_pushed && settings.axis[X_AXIS].steps_per_mm > 0.0f) {
+            sim_view_push_geometry();
+            view_geom_pushed = true;
+        }
+        float p[N_AXIS];
+        system_convert_array_steps_to_mpos(p, sys.position);
+        sim_view_set_tool(p[X_AXIS], p[Y_AXIS], p[Z_AXIS]);
+    }
 
     //platform_sleep(0); // yield needed? or simply trust the OS's thread scheduler...
     on_execute_realtime(state);
