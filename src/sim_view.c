@@ -20,6 +20,12 @@
 
 #define DEG (3.14159265f / 180.0f)
 
+#define ID_SETTINGS 1001
+#define ID_FORMAT   1002
+#define ID_SHOWLOG  1003
+
+extern void sim_request_format_reboot (void);   // main.c
+
 static CRITICAL_SECTION lock;
 static sim_view_geometry_t geom;
 static float tool[3];
@@ -38,12 +44,12 @@ static float cam_yaw = -80.0f, cam_pitch = 30.0f, cam_dist = 500.0f;
 static float cam_target[3];
 static int   dragging = 0, last_mx, last_my, framed = 0;
 
-// 2D overlay: a bitmap font, the latest [MSG:...] line, and a "Show Log" button.
+// 2D overlay: a bitmap font, the latest [MSG:...] line. Buttons live in the window menu bar.
 static GLuint font_base = 0;
 static int    char_w = 8, char_h = 16;
 static char   message[160] = "";
-static int    btn_x, btn_y, btn_w, btn_h;     // Show Log button hit-rect (ortho coords, y up)
 static int    own_console = 0, log_visible = 1;
+static HMENU  hmenu;
 
 // ---- data feed (called from the grbl/realtime threads) -------------------------------------------
 
@@ -160,17 +166,6 @@ static void text2d (int x, int y, const char *s)
     glCallLists((GLsizei)strlen(s), GL_UNSIGNED_BYTE, (const GLubyte *)s);
 }
 
-// Draw a flat button (face + border + label) and record its hit-rect for WM_LBUTTONDOWN.
-static void draw_button (int x, int y, int bw, int bh, const char *label)
-{
-    btn_x = x; btn_y = y; btn_w = bw; btn_h = bh;
-    glColor3f(0.86f, 0.87f, 0.91f);
-    glBegin(GL_QUADS); glVertex2i(x,y); glVertex2i(x+bw,y); glVertex2i(x+bw,y+bh); glVertex2i(x,y+bh); glEnd();
-    glColor3f(0.30f, 0.30f, 0.36f);
-    glBegin(GL_LINE_LOOP); glVertex2i(x,y); glVertex2i(x+bw,y); glVertex2i(x+bw,y+bh); glVertex2i(x,y+bh); glEnd();
-    glColor3f(0.10f, 0.10f, 0.12f);
-    text2d(x + 8, y + (bh - char_h) / 2 + 2, label);
-}
 
 // ---- render --------------------------------------------------------------------------------------
 
@@ -283,9 +278,6 @@ static void render (void)
         text2d(10, 8, msg);
     }
 
-    draw_button(10, h - char_h - 14, 11 * char_w, char_h + 8,
-                (own_console && log_visible) ? "Hide Log" : "Show Log");
-
     glMatrixMode(GL_PROJECTION); glPopMatrix();
     glMatrixMode(GL_MODELVIEW);  glPopMatrix();
 
@@ -300,27 +292,42 @@ static LRESULT CALLBACK wndproc (HWND h, UINT msg, WPARAM wp, LPARAM lp)
         case WM_CLOSE:
             running = 0;                                // close view only; the simulator keeps running
             return 0;
-        case WM_LBUTTONDOWN: {
-            int mx = (short)LOWORD(lp), my = (short)HIWORD(lp);
-            RECT rc; GetClientRect(h, &rc);
-            int oy = rc.bottom - my;                    // window y is top-down; overlay/button is y-up
-            if(mx >= btn_x && mx <= btn_x + btn_w && oy >= btn_y && oy <= btn_y + btn_h) {
-                HWND con = GetConsoleWindow();          // Show Log: reveal/raise the console (the action log)
-                if(con) {
-                    if(own_console) {                   // a console we own can be toggled hidden
-                        log_visible = !log_visible;
-                        ShowWindow(con, log_visible ? SW_SHOW : SW_HIDE);
-                        if(log_visible) SetForegroundWindow(con);
-                    } else {                            // a shared console (run from a shell) is only raised
-                        ShowWindow(con, SW_SHOW);
-                        SetForegroundWindow(con);
-                    }
-                }
-                return 0;
-            }
-            dragging = 1; last_mx = mx; last_my = my; SetCapture(h);
+        case WM_LBUTTONDOWN:
+            dragging = 1; last_mx = (short)LOWORD(lp); last_my = (short)HIWORD(lp); SetCapture(h);
             return 0;
-        }
+
+        case WM_COMMAND:
+            switch(LOWORD(wp)) {
+                case ID_SHOWLOG: {
+                    HWND con = GetConsoleWindow();      // reveal/raise the console (the action log)
+                    if(con) {
+                        if(own_console) {               // a console we own can be toggled hidden
+                            log_visible = !log_visible;
+                            ShowWindow(con, log_visible ? SW_SHOW : SW_HIDE);
+                            if(log_visible) SetForegroundWindow(con);
+                            ModifyMenuA(hmenu, ID_SHOWLOG, MF_BYCOMMAND | MF_STRING, ID_SHOWLOG,
+                                        log_visible ? "Hide Log" : "Show Log");
+                            DrawMenuBar(h);
+                        } else {                        // a shared console (run from a shell) is only raised
+                            ShowWindow(con, SW_SHOW);
+                            SetForegroundWindow(con);
+                        }
+                    }
+                    return 0;
+                }
+                case ID_FORMAT:
+                    if(MessageBoxA(h, "Wipe the simulator filesystem (littlefs) and restart?\n\n"
+                                      "Uploaded macros and ATC state will be cleared.",
+                                   "Format filesystem", MB_OKCANCEL | MB_ICONWARNING) == IDOK)
+                        sim_request_format_reboot();
+                    return 0;
+                case ID_SETTINGS:
+                    MessageBoxA(h, "The fixture configuration dialog is coming soon.\n\n"
+                                   "For now, edit sim_setup.cfg next to the exe and restart.",
+                               "Settings", MB_OK | MB_ICONINFORMATION);
+                    return 0;
+            }
+            return 0;
         case WM_LBUTTONUP:
             dragging = 0; ReleaseCapture();
             return 0;
@@ -357,6 +364,13 @@ static int gl_create (void)
                          960, 720, NULL, NULL, wc.hInstance, NULL);
     if(!hwnd)
         return 0;
+
+    // Menu bar: top-level command items (no sub-menus) - clicking each sends WM_COMMAND.
+    hmenu = CreateMenu();
+    AppendMenuA(hmenu, MF_STRING, ID_SETTINGS, "Settings");
+    AppendMenuA(hmenu, MF_STRING, ID_FORMAT,   "Format");
+    AppendMenuA(hmenu, MF_STRING, ID_SHOWLOG,  "Show Log");
+    SetMenu(hwnd, hmenu);
 
     hdc = GetDC(hwnd);
 

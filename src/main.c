@@ -205,6 +205,7 @@ static void exithandler (int signum)
 // the end of main() can re-execute with the same arguments.
 static char **g_argv = NULL;
 static int g_reboot = 0;   // set by sim_reboot; main() re-launches after its socket teardown
+static int g_format = 0;   // set by sim_request_format_reboot; the re-launch adds -format
 
 // hal.reboot handler: emulate a controller hard reset. Just request a restart here - do NOT spawn or
 // touch sockets: this runs on the grbl thread while the main thread owns the socket loop, and tearing
@@ -217,6 +218,13 @@ void sim_reboot (void)
 {
     g_reboot = 1;
     sim.exit = exit_OK;   // break sim_loop; main() performs the relaunch
+}
+
+// 3D view "Format" menu item: reboot the simulator with a littlefs wipe (-format added to the re-launch).
+void sim_request_format_reboot (void)
+{
+    g_format = 1;
+    sim_reboot();
 }
 
 int main(int argc, char *argv[])
@@ -569,6 +577,8 @@ int main(int argc, char *argv[])
         PROCESS_INFORMATION pi = {0};
         strncpy(cmdline, GetCommandLineA(), sizeof(cmdline) - 1);
         cmdline[sizeof(cmdline) - 1] = '\0';
+        if(g_format && !strstr(cmdline, "-format"))     // Format menu: wipe littlefs on the fresh boot
+            strncat(cmdline, " -format", sizeof(cmdline) - strlen(cmdline) - 1);
         CreateProcessA(NULL, cmdline, NULL, NULL, FALSE,
                        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, NULL, NULL, &si, &pi);
 #else
