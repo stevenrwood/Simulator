@@ -8,6 +8,7 @@
 */
 
 #include "sim_view.h"
+#include "sim_setup.h"
 
 #ifdef _WIN32
 
@@ -17,6 +18,8 @@
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <stddef.h>
 
 #define DEG (3.14159265f / 180.0f)
 
@@ -48,8 +51,13 @@ static int   dragging = 0, last_mx, last_my, framed = 0;
 static GLuint font_base = 0;
 static int    char_w = 8, char_h = 16;
 static char   message[160] = "";
-static int    own_console = 0, log_visible = 1;
 static HMENU  hmenu;
+
+// Show Log opens a dedicated window holding the action log (reliable, unlike toggling the console).
+static HWND   log_hwnd = NULL, log_edit = NULL;
+static char   logbuf[20000];
+static int    loglen = 0;
+static volatile int logdirty = 0;
 
 // ---- data feed (called from the grbl/realtime threads) -------------------------------------------
 
@@ -89,6 +97,26 @@ void sim_view_set_message (const char *s)
     size_t n = strlen(message);
     if(n && message[n - 1] == ']')
         message[n - 1] = '\0';
+    LeaveCriticalSection(&lock);
+}
+
+void sim_view_log_append (const char *s)
+{
+    if(!running)
+        return;
+    int sl = (int)strlen(s);
+    if(sl > (int)sizeof(logbuf) - 3)
+        sl = (int)sizeof(logbuf) - 3;
+    EnterCriticalSection(&lock);
+    if(loglen + sl + 3 >= (int)sizeof(logbuf)) {        // make room by dropping from the front
+        int drop = loglen + sl + 3 - (int)sizeof(logbuf);
+        if(drop > loglen) drop = loglen;
+        memmove(logbuf, logbuf + drop, loglen - drop);
+        loglen -= drop;
+    }
+    memcpy(logbuf + loglen, s, sl); loglen += sl;
+    logbuf[loglen++] = '\r'; logbuf[loglen++] = '\n'; logbuf[loglen] = '\0';
+    logdirty = 1;
     LeaveCriticalSection(&lock);
 }
 
@@ -284,6 +312,171 @@ static void render (void)
     SwapBuffers(hdc);
 }
 
+// ---- settings dialog -----------------------------------------------------------------------------
+// A code-built (no .rc resource) modal dialog that edits the live -setup fixture values. The field table
+// maps each editable value to its offset in sim_setup_values_t so the rows are generated in a loop.
+
+static const struct { const char *label; size_t off; } setup_fields[] = {
+    { "Spoilboard Z",      offsetof(sim_setup_values_t, spoilboard_z)      },
+    { "Stock corner X",    offsetof(sim_setup_values_t, stock_corner_x)    },
+    { "Stock corner Y",    offsetof(sim_setup_values_t, stock_corner_y)    },
+    { "Stock size X",      offsetof(sim_setup_values_t, stock_size_x)      },
+    { "Stock size Y",      offsetof(sim_setup_values_t, stock_size_y)      },
+    { "Stock size Z",      offsetof(sim_setup_values_t, stock_size_z)      },
+    { "Toolsetter X",      offsetof(sim_setup_values_t, toolsetter_x)      },
+    { "Toolsetter Y",      offsetof(sim_setup_values_t, toolsetter_y)      },
+    { "Toolsetter height", offsetof(sim_setup_values_t, toolsetter_height) },
+    { "Toolchange X",      offsetof(sim_setup_values_t, toolchange_x)      },
+    { "Toolchange Y",      offsetof(sim_setup_values_t, toolchange_y)      },
+};
+#define N_SETUP_FIELDS ((int)(sizeof(setup_fields) / sizeof(setup_fields[0])))
+#define IDC_SAVE   200
+#define IDC_CANCEL 201
+
+static HWND cfg_hwnd = NULL, cfg_edit[N_SETUP_FIELDS];
+static int  cfg_done = 0;            // 0 = open, 1 = save, 2 = cancel
+
+static LRESULT CALLBACK cfgproc (HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if(msg == WM_COMMAND) {
+        int id = LOWORD(wp);
+        if(id == IDC_SAVE)        cfg_done = 1;
+        else if(id == IDC_CANCEL) cfg_done = 2;
+        return 0;
+    }
+    if(msg == WM_CLOSE) { cfg_done = 2; return 0; }
+    return DefWindowProc(h, msg, wp, lp);
+}
+
+static void settings_dialog_show (void)
+{
+    sim_setup_values_t v;
+    if(!sim_setup_get_values(&v)) {
+        MessageBoxA(hwnd, "No fixture setup is active.\nLaunch the simulator with -setup <file> to define one.",
+                    "Settings", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    static int registered = 0;
+    HINSTANCE hi = GetModuleHandle(NULL);
+    if(!registered) {
+        WNDCLASSA wc; memset(&wc, 0, sizeof wc);
+        wc.lpfnWndProc = cfgproc;
+        wc.hInstance = hi;
+        wc.lpszClassName = "grblHALSimSettings";
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        RegisterClassA(&wc);
+        registered = 1;
+    }
+
+    const int rowh = 26, top = 14, lblw = 130, editw = 90, pad = 14;
+    int clientw = pad + lblw + 8 + editw + pad;
+    int clienth = top + N_SETUP_FIELDS * rowh + 12 + 30 + pad;
+    RECT r = { 0, 0, clientw, clienth };
+    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
+    AdjustWindowRect(&r, style, FALSE);
+    cfg_hwnd = CreateWindowExA(WS_EX_CONTROLPARENT | WS_EX_DLGMODALFRAME, "grblHALSimSettings",
+                               "Fixture settings", style, CW_USEDEFAULT, CW_USEDEFAULT,
+                               r.right - r.left, r.bottom - r.top, hwnd, NULL, hi, NULL);
+
+    HFONT f = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    for(int i = 0; i < N_SETUP_FIELDS; i++) {
+        int y = top + i * rowh;
+        HWND lbl = CreateWindowA("STATIC", setup_fields[i].label, WS_CHILD | WS_VISIBLE | SS_RIGHT,
+                                 pad, y + 3, lblw, 18, cfg_hwnd, NULL, hi, NULL);
+        char txt[32];
+        snprintf(txt, sizeof txt, "%.3f", *(float *)((char *)&v + setup_fields[i].off));
+        cfg_edit[i] = CreateWindowA("EDIT", txt, WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
+                                    pad + lblw + 8, y, editw, 20, cfg_hwnd, NULL, hi, NULL);
+        SendMessageA(lbl, WM_SETFONT, (WPARAM)f, TRUE);
+        SendMessageA(cfg_edit[i], WM_SETFONT, (WPARAM)f, TRUE);
+    }
+    int by = top + N_SETUP_FIELDS * rowh + 8;
+    HWND bs = CreateWindowA("BUTTON", "Save", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                            clientw - pad - 2 * 80 - 8, by, 80, 26, cfg_hwnd, (HMENU)IDC_SAVE, hi, NULL);
+    HWND bc = CreateWindowA("BUTTON", "Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                            clientw - pad - 80, by, 80, 26, cfg_hwnd, (HMENU)IDC_CANCEL, hi, NULL);
+    SendMessageA(bs, WM_SETFONT, (WPARAM)f, TRUE);
+    SendMessageA(bc, WM_SETFONT, (WPARAM)f, TRUE);
+
+    cfg_done = 0;
+    EnableWindow(hwnd, FALSE);                          // modal with respect to the 3D window
+    ShowWindow(cfg_hwnd, SW_SHOW);
+    SetForegroundWindow(cfg_hwnd);
+
+    MSG m;                                              // nested modal pump (the 3D view pauses meanwhile)
+    while(cfg_done == 0 && GetMessage(&m, NULL, 0, 0)) {
+        if(!IsDialogMessage(cfg_hwnd, &m)) {
+            TranslateMessage(&m);
+            DispatchMessage(&m);
+        }
+    }
+
+    if(cfg_done == 1) {                                 // Save: read the fields back and apply
+        for(int i = 0; i < N_SETUP_FIELDS; i++) {
+            char txt[32];
+            GetWindowTextA(cfg_edit[i], txt, sizeof txt);
+            *(float *)((char *)&v + setup_fields[i].off) = (float)atof(txt);
+        }
+        sim_setup_set_values(&v);
+    }
+
+    EnableWindow(hwnd, TRUE);
+    DestroyWindow(cfg_hwnd);
+    cfg_hwnd = NULL;
+    SetForegroundWindow(hwnd);
+}
+
+// ---- log window ----------------------------------------------------------------------------------
+
+static void log_refresh (void)
+{
+    static char buf[sizeof(logbuf)];
+    if(!log_edit)
+        return;
+    EnterCriticalSection(&lock);
+    memcpy(buf, logbuf, loglen + 1);
+    logdirty = 0;
+    LeaveCriticalSection(&lock);
+    SetWindowTextA(log_edit, buf);
+    int n = GetWindowTextLengthA(log_edit);             // keep the newest lines in view
+    SendMessageA(log_edit, EM_SETSEL, n, n);
+    SendMessageA(log_edit, EM_SCROLLCARET, 0, 0);
+}
+
+static LRESULT CALLBACK logproc (HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if(msg == WM_SIZE) { if(log_edit) MoveWindow(log_edit, 0, 0, LOWORD(lp), HIWORD(lp), TRUE); return 0; }
+    if(msg == WM_CLOSE) { ShowWindow(h, SW_HIDE); return 0; }   // hide (keep it for next time)
+    return DefWindowProc(h, msg, wp, lp);
+}
+
+static void log_window_show (void)
+{
+    if(!log_hwnd) {
+        WNDCLASSA wc;
+        memset(&wc, 0, sizeof wc);
+        wc.lpfnWndProc = logproc;
+        wc.hInstance = GetModuleHandle(NULL);
+        wc.lpszClassName = "grblHALSimLog";
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        RegisterClassA(&wc);
+        log_hwnd = CreateWindowA("grblHALSimLog", "grblHAL_sim - action log", WS_OVERLAPPEDWINDOW,
+                                 CW_USEDEFAULT, CW_USEDEFAULT, 760, 480, NULL, NULL, wc.hInstance, NULL);
+        log_edit = CreateWindowA("EDIT", "",
+                                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+                                 0, 0, 760, 480, log_hwnd, NULL, GetModuleHandle(NULL), NULL);
+        HFONT f = CreateFontA(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_TT_PRECIS,
+                              CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
+        SendMessageA(log_edit, WM_SETFONT, (WPARAM)f, TRUE);
+    }
+    log_refresh();
+    ShowWindow(log_hwnd, SW_SHOW);
+    SetForegroundWindow(log_hwnd);
+}
+
 // ---- window / GL setup ---------------------------------------------------------------------------
 
 static LRESULT CALLBACK wndproc (HWND h, UINT msg, WPARAM wp, LPARAM lp)
@@ -298,23 +491,9 @@ static LRESULT CALLBACK wndproc (HWND h, UINT msg, WPARAM wp, LPARAM lp)
 
         case WM_COMMAND:
             switch(LOWORD(wp)) {
-                case ID_SHOWLOG: {
-                    HWND con = GetConsoleWindow();      // reveal/raise the console (the action log)
-                    if(con) {
-                        if(own_console) {               // a console we own can be toggled hidden
-                            log_visible = !log_visible;
-                            ShowWindow(con, log_visible ? SW_SHOW : SW_HIDE);
-                            if(log_visible) SetForegroundWindow(con);
-                            ModifyMenuA(hmenu, ID_SHOWLOG, MF_BYCOMMAND | MF_STRING, ID_SHOWLOG,
-                                        log_visible ? "Hide Log" : "Show Log");
-                            DrawMenuBar(h);
-                        } else {                        // a shared console (run from a shell) is only raised
-                            ShowWindow(con, SW_SHOW);
-                            SetForegroundWindow(con);
-                        }
-                    }
+                case ID_SHOWLOG:
+                    log_window_show();
                     return 0;
-                }
                 case ID_FORMAT:
                     if(MessageBoxA(h, "Wipe the simulator filesystem (littlefs) and restart?\n\n"
                                       "Uploaded macros and ATC state will be cleared.",
@@ -322,9 +501,7 @@ static LRESULT CALLBACK wndproc (HWND h, UINT msg, WPARAM wp, LPARAM lp)
                         sim_request_format_reboot();
                     return 0;
                 case ID_SETTINGS:
-                    MessageBoxA(h, "The fixture configuration dialog is coming soon.\n\n"
-                                   "For now, edit sim_setup.cfg next to the exe and restart.",
-                               "Settings", MB_OK | MB_ICONINFORMATION);
+                    settings_dialog_show();
                     return 0;
             }
             return 0;
@@ -413,16 +590,13 @@ static DWORD WINAPI view_thread (LPVOID arg)
     quad = gluNewQuadric();
     gluQuadricNormals(quad, GLU_SMOOTH);
 
-    // Hide the console by default when we own it (e.g. launched from Explorer) - the action log is then
-    // shown on demand via the Show Log button. A console shared with a shell is left alone.
+    // Hide the console when we own it (e.g. launched from Explorer) - the action log is shown on demand
+    // via the Show Log menu window. A console shared with a shell is left alone.
     {
         HWND con = GetConsoleWindow();
-        if(con) {
-            DWORD pids[2];
-            own_console = (GetConsoleProcessList(pids, 2) == 1);
-            if(own_console) { ShowWindow(con, SW_HIDE); log_visible = 0; }
-            else log_visible = 1;
-        }
+        DWORD pids[2];
+        if(con && GetConsoleProcessList(pids, 2) == 1)
+            ShowWindow(con, SW_HIDE);
     }
 
     while(running) {
@@ -432,6 +606,8 @@ static DWORD WINAPI view_thread (LPVOID arg)
             DispatchMessage(&m);
         }
         render();
+        if(log_hwnd && logdirty && IsWindowVisible(log_hwnd))   // live-update the log window if open
+            log_refresh();
         Sleep(16);                                      // ~60 fps
     }
 
@@ -459,5 +635,6 @@ void sim_view_start (void) {}
 void sim_view_set_geometry (const sim_view_geometry_t *g) { (void)g; }
 void sim_view_set_tool (float x, float y, float z) { (void)x; (void)y; (void)z; }
 void sim_view_set_message (const char *s) { (void)s; }
+void sim_view_log_append (const char *s) { (void)s; }
 
 #endif

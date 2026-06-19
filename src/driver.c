@@ -26,6 +26,7 @@
 #include "driver.h"
 #include "serial.h"
 #include "sim_view.h"
+#include "sim_setup.h"
 #include "eeprom.h"
 #include "grbl_eeprom_extensions.h"
 #include "platform.h"
@@ -98,13 +99,16 @@ static inline bool sim_in_box (const sim_box_t *b, const float *p)
 #define G28_Z_ABOVE_SPOIL 4.0f   // G28 Z this far above the spoilboard
 static struct {
     bool active;
-    bool applied;            // offsets written to NVS yet (one-shot at boot)
+    bool applied;            // offsets written to NVS yet (one-shot at boot, re-armed by a Settings edit)
+    char path[260];          // setup file the values came from (so a Settings edit can persist them)
     float spoilboard_z;
     float stock_corner_x, stock_corner_y;
     float stock_size_x, stock_size_y, stock_size_z;
     float toolsetter_x, toolsetter_y, toolsetter_height;
     float toolchange_x, toolchange_y;
 } sim_setup = {0};
+
+static bool view_geom_pushed = false;   // 3D geometry pushed to the view; cleared to force a re-push
 
 // Parse a "-setup" file: "key = value" lines, '#' or ';' begin a comment. Returns false if it cannot be
 // opened. Unknown keys are ignored; missing keys keep their zero default. Called from main() at start-up.
@@ -140,6 +144,7 @@ bool sim_setup_load (const char *path)
 
     fclose(f);
     sim_setup.active = true;
+    strncpy(sim_setup.path, path, sizeof(sim_setup.path) - 1);
 
     fprintf(stderr, "setup: loaded %s\n  spoilboard_z=%.3f stock_corner=(%.3f,%.3f) size=(%.1f,%.1f,%.1f)"
                     " toolsetter=(%.3f,%.3f)+%.1f toolchange=(%.3f,%.3f)\n",
@@ -180,6 +185,76 @@ static void sim_setup_apply_offsets (void)
             sim_setup.stock_corner_x - G28_CORNER_CLEAR, sim_setup.stock_corner_y - G28_CORNER_CLEAR,
             sim_setup.spoilboard_z + G28_Z_ABOVE_SPOIL,
             sim_setup.toolsetter_x, sim_setup.toolsetter_y, sim_setup.toolchange_x, sim_setup.toolchange_y);
+}
+
+// ---- Settings dialog accessors (sim_setup.h) -----------------------------------------------------
+// Expose the setup values to the 3D view's Settings dialog and accept edits back. get/set copy field by
+// field so the editable struct (sim_setup_values_t) stays decoupled from the driver's internal bookkeeping.
+
+bool sim_setup_get_values (sim_setup_values_t *out)
+{
+    if(!sim_setup.active)
+        return false;
+    out->spoilboard_z      = sim_setup.spoilboard_z;
+    out->stock_corner_x    = sim_setup.stock_corner_x;
+    out->stock_corner_y    = sim_setup.stock_corner_y;
+    out->stock_size_x      = sim_setup.stock_size_x;
+    out->stock_size_y      = sim_setup.stock_size_y;
+    out->stock_size_z      = sim_setup.stock_size_z;
+    out->toolsetter_x      = sim_setup.toolsetter_x;
+    out->toolsetter_y      = sim_setup.toolsetter_y;
+    out->toolsetter_height = sim_setup.toolsetter_height;
+    out->toolchange_x      = sim_setup.toolchange_x;
+    out->toolchange_y      = sim_setup.toolchange_y;
+    return true;
+}
+
+// Persist the current setup values back to the .cfg file they were loaded from (key = value lines).
+static void sim_setup_save (void)
+{
+    if(sim_setup.path[0] == '\0')
+        return;
+    FILE *f = fopen(sim_setup.path, "w");
+    if(f == NULL) {
+        fprintf(stderr, "setup: could not write %s\n", sim_setup.path);
+        return;
+    }
+    fprintf(f, "# grblHAL simulator fixture setup - edited from the 3D view Settings dialog\n");
+    fprintf(f, "spoilboard_z = %.3f\n", sim_setup.spoilboard_z);
+    fprintf(f, "stock_corner_x = %.3f\n", sim_setup.stock_corner_x);
+    fprintf(f, "stock_corner_y = %.3f\n", sim_setup.stock_corner_y);
+    fprintf(f, "stock_size_x = %.3f\n", sim_setup.stock_size_x);
+    fprintf(f, "stock_size_y = %.3f\n", sim_setup.stock_size_y);
+    fprintf(f, "stock_size_z = %.3f\n", sim_setup.stock_size_z);
+    fprintf(f, "toolsetter_x = %.3f\n", sim_setup.toolsetter_x);
+    fprintf(f, "toolsetter_y = %.3f\n", sim_setup.toolsetter_y);
+    fprintf(f, "toolsetter_height = %.3f\n", sim_setup.toolsetter_height);
+    fprintf(f, "toolchange_x = %.3f\n", sim_setup.toolchange_x);
+    fprintf(f, "toolchange_y = %.3f\n", sim_setup.toolchange_y);
+    fclose(f);
+    fprintf(stderr, "setup: saved %s\n", sim_setup.path);
+}
+
+void sim_setup_set_values (const sim_setup_values_t *in)
+{
+    sim_setup.spoilboard_z      = in->spoilboard_z;
+    sim_setup.stock_corner_x    = in->stock_corner_x;
+    sim_setup.stock_corner_y    = in->stock_corner_y;
+    sim_setup.stock_size_x      = in->stock_size_x;
+    sim_setup.stock_size_y      = in->stock_size_y;
+    sim_setup.stock_size_z      = in->stock_size_z;
+    sim_setup.toolsetter_x      = in->toolsetter_x;
+    sim_setup.toolsetter_y      = in->toolsetter_y;
+    sim_setup.toolsetter_height = in->toolsetter_height;
+    sim_setup.toolchange_x      = in->toolchange_x;
+    sim_setup.toolchange_y      = in->toolchange_y;
+
+    sim_setup_save();
+
+    // Re-arm the one-shots so the grbl-thread realtime loop re-applies the G28/G30/G59.3 offsets and
+    // re-pushes the 3D geometry on its next tick (benign cross-thread bool writes).
+    sim_setup.applied = false;
+    view_geom_pushed = false;
 }
 
 // Build the 3D view's static geometry (machine envelope + spoilboard/stock/puck) from the live settings
@@ -787,7 +862,6 @@ void sim_process_realtime (uint_fast16_t state)
     // Feed the optional 3D view (-view): push the static geometry once settings are live, then the live
     // tool position every tick. Skipped entirely when -view is off (sim_view_active() == false).
     if(sim_view_active()) {
-        static bool view_geom_pushed = false;
         if(!view_geom_pushed && settings.axis[X_AXIS].steps_per_mm > 0.0f) {
             sim_view_push_geometry();
             view_geom_pushed = true;

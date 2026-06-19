@@ -213,8 +213,12 @@ static void sim_log_line (const char *dir, uint8_t *buf, unsigned *len, uint8_t 
     if(c == '\r' || c == '\n') {
         if(*len) {
             buf[*len] = '\0';
-            if(buf[0] != '<')                   // drop status reports
+            if(buf[0] != '<') {                 // drop status reports
                 fprintf(stderr, "%s %s\n", dir, buf);
+                char line[280];
+                snprintf(line, sizeof(line), "%s %s", dir, buf);
+                sim_view_log_append(line);      // feed the Show Log window
+            }
             if(dir[0] == '>' && strncmp((char *)buf, "[MSG:", 5) == 0)   // surface [MSG:] in the 3D view
                 sim_view_set_message((char *)buf);
             *len = 0;

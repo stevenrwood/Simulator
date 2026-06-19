@@ -33,3 +33,6 @@ void sim_view_set_tool (float x, float y, float z);
 
 // Publish the latest controller [MSG:...] line for the status line at the bottom of the view.
 void sim_view_set_message (const char *s);
+
+// Append one line to the action log shown by the Show Log window.
+void sim_view_log_append (const char *s);
