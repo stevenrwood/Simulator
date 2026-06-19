@@ -32,6 +32,7 @@
 #include "eeprom.h"
 #include "mcu.h"
 #include "driver.h"
+#include "sim_view.h"
 
 #include "grbl/grbl.h"
 
@@ -214,6 +215,8 @@ static void sim_log_line (const char *dir, uint8_t *buf, unsigned *len, uint8_t 
             buf[*len] = '\0';
             if(buf[0] != '<')                   // drop status reports
                 fprintf(stderr, "%s %s\n", dir, buf);
+            if(dir[0] == '>' && strncmp((char *)buf, "[MSG:", 5) == 0)   // surface [MSG:] in the 3D view
+                sim_view_set_message((char *)buf);
             *len = 0;
         }
     } else if(c >= 0x20 && c < 0x7f && *len < 250)

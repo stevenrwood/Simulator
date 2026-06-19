@@ -38,6 +38,13 @@ static float cam_yaw = -80.0f, cam_pitch = 30.0f, cam_dist = 500.0f;
 static float cam_target[3];
 static int   dragging = 0, last_mx, last_my, framed = 0;
 
+// 2D overlay: a bitmap font, the latest [MSG:...] line, and a "Show Log" button.
+static GLuint font_base = 0;
+static int    char_w = 8, char_h = 16;
+static char   message[160] = "";
+static int    btn_x, btn_y, btn_w, btn_h;     // Show Log button hit-rect (ortho coords, y up)
+static int    own_console = 0, log_visible = 1;
+
 // ---- data feed (called from the grbl/realtime threads) -------------------------------------------
 
 bool sim_view_active (void)
@@ -60,6 +67,22 @@ void sim_view_set_tool (float x, float y, float z)
         return;
     EnterCriticalSection(&lock);
     tool[0] = x; tool[1] = y; tool[2] = z;
+    LeaveCriticalSection(&lock);
+}
+
+void sim_view_set_message (const char *s)
+{
+    if(!running)
+        return;
+    const char *p = s;
+    if(strncmp(p, "[MSG:", 5) == 0)             // strip the [MSG:...] wrapper for display
+        p += 5;
+    EnterCriticalSection(&lock);
+    strncpy(message, p, sizeof(message) - 1);
+    message[sizeof(message) - 1] = '\0';
+    size_t n = strlen(message);
+    if(n && message[n - 1] == ']')
+        message[n - 1] = '\0';
     LeaveCriticalSection(&lock);
 }
 
@@ -116,13 +139,37 @@ static void cylinder (float cx, float cy, float z0, float z1, float r)
     glPopMatrix();
 }
 
-// Tool: a cone with its tip at the controlled point, widening upward (spindle-ish).
-static void tool_cone (float x, float y, float z)
+// Tool: a funnel standing tip-down on the controlled point - a thin spout at the tip widening to a wide
+// bowl, so it reads clearly and the contact point is obvious.
+static void tool_funnel (float x, float y, float z)
 {
     glPushMatrix();
     glTranslatef(x, y, z);
-    gluCylinder(quad, 0.0, 6.0, 30.0, 20, 1);   // tip (r=0) at z, base (r=6) 30mm up
+    gluCylinder(quad, 2.0, 2.0, 14.0, 16, 1);    // spout: thin tube standing on the tip
+    gluDisk(quad, 0.0, 2.0, 16, 1);              // close the bottom of the spout
+    glTranslatef(0, 0, 14.0);
+    gluCylinder(quad, 2.0, 18.0, 34.0, 28, 1);    // bowl: widens from the spout to a wide rim
     glPopMatrix();
+}
+
+// Draw a string with the bitmap font at screen (ortho) position (x,y) = lower-left of the text.
+static void text2d (int x, int y, const char *s)
+{
+    glRasterPos2i(x, y);
+    glListBase(font_base);
+    glCallLists((GLsizei)strlen(s), GL_UNSIGNED_BYTE, (const GLubyte *)s);
+}
+
+// Draw a flat button (face + border + label) and record its hit-rect for WM_LBUTTONDOWN.
+static void draw_button (int x, int y, int bw, int bh, const char *label)
+{
+    btn_x = x; btn_y = y; btn_w = bw; btn_h = bh;
+    glColor3f(0.86f, 0.87f, 0.91f);
+    glBegin(GL_QUADS); glVertex2i(x,y); glVertex2i(x+bw,y); glVertex2i(x+bw,y+bh); glVertex2i(x,y+bh); glEnd();
+    glColor3f(0.30f, 0.30f, 0.36f);
+    glBegin(GL_LINE_LOOP); glVertex2i(x,y); glVertex2i(x+bw,y); glVertex2i(x+bw,y+bh); glVertex2i(x,y+bh); glEnd();
+    glColor3f(0.10f, 0.10f, 0.12f);
+    text2d(x + 8, y + (bh - char_h) / 2 + 2, label);
 }
 
 // ---- render --------------------------------------------------------------------------------------
@@ -157,8 +204,10 @@ static void render (void)
 {
     sim_view_geometry_t g;
     float t[3];
+    char msg[160];
     EnterCriticalSection(&lock);
     g = geom; t[0] = tool[0]; t[1] = tool[1]; t[2] = tool[2];
+    strncpy(msg, message, sizeof msg); msg[sizeof msg - 1] = '\0';
     LeaveCriticalSection(&lock);
 
     frame_camera(&g);
@@ -166,7 +215,7 @@ static void render (void)
     RECT rc; GetClientRect(hwnd, &rc);
     int w = rc.right, h = rc.bottom; if(h < 1) h = 1;
     glViewport(0, 0, w, h);
-    glClearColor(0.10f, 0.11f, 0.13f, 1.0f);
+    glClearColor(0.90f, 0.90f, 0.92f, 1.0f);            // light background
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
 
@@ -187,9 +236,9 @@ static void render (void)
 
     // --- unlit reference geometry (grid + envelope) ---
     glDisable(GL_LIGHTING);
-    glColor3f(0.25f, 0.27f, 0.30f);
+    glColor3f(0.62f, 0.63f, 0.66f);
     grid(g.env_min[0], g.env_min[1], g.env_max[0], g.env_max[1], g.spoil_z, 50.0f);
-    glColor3f(0.40f, 0.42f, 0.46f);
+    glColor3f(0.40f, 0.40f, 0.45f);
     box_wire(g.env_min, g.env_max);
 
     // --- lit solids ---
@@ -197,24 +246,48 @@ static void render (void)
     glEnable(GL_LIGHT0);
     glEnable(GL_COLOR_MATERIAL);
     glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
-    GLfloat amb[4] = { 0.35f, 0.35f, 0.38f, 1.0f };
+    GLfloat amb[4] = { 0.45f, 0.45f, 0.48f, 1.0f };
     glLightModelfv(GL_LIGHT_MODEL_AMBIENT, amb);
 
     if(g.have_fixtures) {
         // spoilboard: thin slab just under the plane so the stock visibly sits on it
         float sp_mn[3] = { g.env_min[0], g.env_min[1], g.spoil_z - 6.0f };
         float sp_mx[3] = { g.env_max[0], g.env_max[1], g.spoil_z };
-        glColor3f(0.30f, 0.22f, 0.14f);                 // brown spoilboard
+        glColor3f(0.34f, 0.25f, 0.16f);                 // brown spoilboard
         box_solid(sp_mn, sp_mx);
-        glColor3f(0.80f, 0.66f, 0.40f);                 // tan stock
+        glColor3f(0.82f, 0.68f, 0.42f);                 // tan stock
         box_solid(g.stock_min, g.stock_max);
-        glColor3f(0.55f, 0.58f, 0.62f);                 // grey toolsetter puck
+        glColor3f(0.50f, 0.53f, 0.58f);                 // grey toolsetter puck
         cylinder((g.puck_min[0]+g.puck_max[0])*0.5f, (g.puck_min[1]+g.puck_max[1])*0.5f,
                  g.puck_min[2], g.puck_max[2], (g.puck_max[0]-g.puck_min[0])*0.5f);
     }
 
-    glColor3f(0.95f, 0.35f, 0.20f);                     // tool cone
-    tool_cone(t[0], t[1], t[2]);
+    glColor3f(0.90f, 0.12f, 0.12f);                     // tool (bright red funnel)
+    tool_funnel(t[0], t[1], t[2]);
+
+    // --- 2D overlay: machine position (top-right), MSG status (bottom), Show Log button (top-left) ---
+    glDisable(GL_LIGHTING);
+    glDisable(GL_DEPTH_TEST);
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); gluOrtho2D(0, w, 0, h);
+    glMatrixMode(GL_MODELVIEW);  glPushMatrix(); glLoadIdentity();
+
+    char line[64];
+    int rx = w - 15 * char_w;
+    glColor3f(0.08f, 0.08f, 0.10f);
+    snprintf(line, sizeof line, "X %10.3f", t[0]); text2d(rx, h - char_h - 6,      line);
+    snprintf(line, sizeof line, "Y %10.3f", t[1]); text2d(rx, h - 2*char_h - 8,    line);
+    snprintf(line, sizeof line, "Z %10.3f", t[2]); text2d(rx, h - 3*char_h - 10,   line);
+
+    if(msg[0]) {
+        glColor3f(0.05f, 0.22f, 0.55f);
+        text2d(10, 8, msg);
+    }
+
+    draw_button(10, h - char_h - 14, 11 * char_w, char_h + 8,
+                (own_console && log_visible) ? "Hide Log" : "Show Log");
+
+    glMatrixMode(GL_PROJECTION); glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);  glPopMatrix();
 
     SwapBuffers(hdc);
 }
@@ -227,9 +300,27 @@ static LRESULT CALLBACK wndproc (HWND h, UINT msg, WPARAM wp, LPARAM lp)
         case WM_CLOSE:
             running = 0;                                // close view only; the simulator keeps running
             return 0;
-        case WM_LBUTTONDOWN:
-            dragging = 1; last_mx = (short)LOWORD(lp); last_my = (short)HIWORD(lp); SetCapture(h);
+        case WM_LBUTTONDOWN: {
+            int mx = (short)LOWORD(lp), my = (short)HIWORD(lp);
+            RECT rc; GetClientRect(h, &rc);
+            int oy = rc.bottom - my;                    // window y is top-down; overlay/button is y-up
+            if(mx >= btn_x && mx <= btn_x + btn_w && oy >= btn_y && oy <= btn_y + btn_h) {
+                HWND con = GetConsoleWindow();          // Show Log: reveal/raise the console (the action log)
+                if(con) {
+                    if(own_console) {                   // a console we own can be toggled hidden
+                        log_visible = !log_visible;
+                        ShowWindow(con, log_visible ? SW_SHOW : SW_HIDE);
+                        if(log_visible) SetForegroundWindow(con);
+                    } else {                            // a shared console (run from a shell) is only raised
+                        ShowWindow(con, SW_SHOW);
+                        SetForegroundWindow(con);
+                    }
+                }
+                return 0;
+            }
+            dragging = 1; last_mx = mx; last_my = my; SetCapture(h);
             return 0;
+        }
         case WM_LBUTTONUP:
             dragging = 0; ReleaseCapture();
             return 0;
@@ -282,6 +373,17 @@ static int gl_create (void)
 
     hglrc = wglCreateContext(hdc);
     wglMakeCurrent(hdc, hglrc);
+
+    // Build a bitmap font for the 2D overlay (display lists 0..255 for the current DC font).
+    HFONT hfont = CreateFontA(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
+                              OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                              FIXED_PITCH | FF_MODERN, "Consolas");
+    SelectObject(hdc, hfont);
+    font_base = glGenLists(256);
+    wglUseFontBitmaps(hdc, 0, 256, font_base);
+    TEXTMETRICA tm;
+    if(GetTextMetricsA(hdc, &tm)) { char_w = tm.tmAveCharWidth; char_h = tm.tmHeight; }
+
     return 1;
 }
 
@@ -296,6 +398,18 @@ static DWORD WINAPI view_thread (LPVOID arg)
     fprintf(stderr, "view: 3D machine view opened\n");
     quad = gluNewQuadric();
     gluQuadricNormals(quad, GLU_SMOOTH);
+
+    // Hide the console by default when we own it (e.g. launched from Explorer) - the action log is then
+    // shown on demand via the Show Log button. A console shared with a shell is left alone.
+    {
+        HWND con = GetConsoleWindow();
+        if(con) {
+            DWORD pids[2];
+            own_console = (GetConsoleProcessList(pids, 2) == 1);
+            if(own_console) { ShowWindow(con, SW_HIDE); log_visible = 0; }
+            else log_visible = 1;
+        }
+    }
 
     while(running) {
         MSG m;
@@ -330,5 +444,6 @@ bool sim_view_active (void) { return false; }
 void sim_view_start (void) {}
 void sim_view_set_geometry (const sim_view_geometry_t *g) { (void)g; }
 void sim_view_set_tool (float x, float y, float z) { (void)x; (void)y; (void)z; }
+void sim_view_set_message (const char *s) { (void)s; }
 
 #endif

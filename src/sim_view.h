@@ -30,3 +30,6 @@ void sim_view_set_geometry (const sim_view_geometry_t *g);
 
 // Publish the live tool tip position in machine coordinates (call each realtime tick).
 void sim_view_set_tool (float x, float y, float z);
+
+// Publish the latest controller [MSG:...] line for the status line at the bottom of the view.
+void sim_view_set_message (const char *s);
