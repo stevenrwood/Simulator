@@ -3,4 +3,4 @@
 	url = https://github.com/stevenrwood/core
 [submodule "src/sdcard"]
 	path = src/sdcard
-	url = https://github.com/grblHAL/Plugin_SD_card
+	url = https://github.com/stevenrwood/Plugin_SD_card
