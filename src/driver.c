@@ -837,17 +837,25 @@ bool driver_setup (settings_t *settings)
 // ensures hardware simulator gets some cycles in "parallel"
 void sim_process_realtime (uint_fast16_t state)
 {
-    // One-shot, once settings are loaded: place the simulated carriage in the middle of the X/Y work
-    // area and 10 mm below Z home instead of booting on the home corner, so a subsequent $H is a clearly
-    // visible move in the sender's 3D view. sys.position is what grbl reports (drives the displayed
-    // tool); sim_axis_pos is the sim's own switch-tripping counter - set both so they stay in step.
-    // max_travel is stored negative (work envelope is [max_travel, 0]), so max_travel/2 is the centre.
+    // One-shot, once settings are loaded: park the carriage over the centre of the spoilboard at Z = 0
+    // (machine top) instead of booting on the home corner, so the tool is visible in the 3D view straight
+    // away (before homing) and a subsequent $H is a clearly visible move. sys.position is what grbl reports
+    // (drives the displayed tool); sim_axis_pos is the sim's own switch-tripping counter - set both so they
+    // stay in step. The work envelope is [0, |max_travel|] for an axis that homes toward its negative end
+    // (extends +) and [-|max_travel|, 0] otherwise, so the centre depends on the homing direction - using
+    // max_travel/2 (always negative) put X/Y outside the envelope and off-screen until homing corrected it.
     static bool start_pos_set = false;
     if(!start_pos_set && settings.axis[X_AXIS].steps_per_mm > 0.0f) {
         start_pos_set = true;
         uint_fast8_t i = 0;
         do {
-            float pos_mm = i == Z_AXIS ? -10.0f : settings.axis[i].max_travel / 2.0f;
+            float pos_mm;
+            if(i == Z_AXIS)
+                pos_mm = 0.0f;                                      // machine top - tool hovers above the stock
+            else {
+                float travel = -settings.axis[i].max_travel;       // positive magnitude
+                pos_mm = bit_istrue(settings.homing.dir_mask.value, bit(i)) ? travel * 0.5f : travel * -0.5f;
+            }
             int32_t steps = (int32_t)(pos_mm * settings.axis[i].steps_per_mm);
             sys.position[i] = steps;
             sim_axis_pos[i] = steps;
