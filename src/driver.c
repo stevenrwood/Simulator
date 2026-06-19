@@ -287,8 +287,14 @@ static void sim_push_tool_geometry (void)
         sim_view_set_tool_geometry(0.0f, SIM_TOOL_FLAT, 0.0f);   // unknown tool -> no carving
 }
 
-// Parse a "(TOOL ...)" comment into the tool table. Receives the comment body without the parentheses,
-// e.g. "TOOL T=1 D=6.35 TYPE=FLAT". Unknown keys are ignored; case-insensitive.
+// Geometry parsed from a tool comment with no T= (an end-of-line comment on the M6 line); it is applied
+// to the next tool selected. Lets the post tag the cutter on the tool-change line, e.g. T1 M6 (TOOL D=6.35
+// TYPE=FLAT), as well as in a top-of-file (TOOL T=1 ...) block.
+static sim_tool_t pending_tool = {0};
+
+// Parse a "(TOOL ...)" comment. Receives the comment body without the parentheses, e.g. "TOOL T=1 D=6.35
+// TYPE=FLAT" (top-of-file table) or "TOOL D=6.35 TYPE=FLAT" (no T= -> the tool being changed to). Unknown
+// keys are ignored; case-insensitive.
 static status_code_t sim_on_gcode_comment (char *comment)
 {
     char buf[120];
@@ -297,51 +303,62 @@ static status_code_t sim_on_gcode_comment (char *comment)
 
     char *tok = strtok(buf, " \t");
     if(tok && !strcasecmp(tok, "TOOL")) {
-        int   id = -1, shape = SIM_TOOL_FLAT;
-        float dia = 0.0f, ang = 0.0f;
+        int   id = -1;
+        sim_tool_t t = { .defined = true, .diameter = 0.0f, .shape = SIM_TOOL_FLAT, .vangle = 0.0f };
         while((tok = strtok(NULL, " \t")) != NULL) {
             char *eq = strchr(tok, '=');
             if(eq == NULL)
                 continue;
             *eq++ = '\0';
             if(!strcasecmp(tok, "T"))         id = atoi(eq);
-            else if(!strcasecmp(tok, "D"))    dia = (float)atof(eq);
-            else if(!strcasecmp(tok, "A"))    ang = (float)atof(eq);
+            else if(!strcasecmp(tok, "D"))    t.diameter = (float)atof(eq);
+            else if(!strcasecmp(tok, "A"))    t.vangle = (float)atof(eq);
             else if(!strcasecmp(tok, "TYPE")) {
-                if(!strcasecmp(eq, "BALL"))      shape = SIM_TOOL_BALL;
-                else if(!strcasecmp(eq, "VBIT")) shape = SIM_TOOL_VBIT;
-                else                             shape = SIM_TOOL_FLAT;   // FLAT / ENDMILL / unknown
+                if(!strcasecmp(eq, "BALL"))      t.shape = SIM_TOOL_BALL;
+                else if(!strcasecmp(eq, "VBIT")) t.shape = SIM_TOOL_VBIT;
+                else                             t.shape = SIM_TOOL_FLAT;   // FLAT / ENDMILL / unknown
             }
         }
-        if(id >= 0 && id <= SIM_MAX_TOOL) {
-            sim_tools[id].defined  = true;
-            sim_tools[id].diameter = dia;
-            sim_tools[id].shape    = shape;
-            sim_tools[id].vangle   = ang;
-            fprintf(stderr, "tool: T%d D=%.3f TYPE=%d A=%.1f\n", id, dia, shape, ang);
+        if(id >= 0 && id <= SIM_MAX_TOOL) {                 // explicit tool number -> store directly
+            sim_tools[id] = t;
+            fprintf(stderr, "tool: T%d D=%.3f TYPE=%d A=%.1f\n", id, t.diameter, t.shape, t.vangle);
             if(id == sim_active_tool)
                 sim_push_tool_geometry();
+        } else {                                            // no T= -> apply to the next tool selected
+            pending_tool = t;
+            fprintf(stderr, "tool: pending D=%.3f TYPE=%d A=%.1f (next M6)\n", t.diameter, t.shape, t.vangle);
         }
     }
 
     return on_gcode_comment ? on_gcode_comment(comment) : Status_OK;
 }
 
+// Apply any pending (no-T) tool comment to the tool now being selected, then make it the active cutter.
+static void sim_set_active_tool (int id)
+{
+    if(pending_tool.defined && id >= 0 && id <= SIM_MAX_TOOL) {
+        sim_tools[id] = pending_tool;
+        pending_tool.defined = false;
+        fprintf(stderr, "tool: T%d D=%.3f TYPE=%d (from M6-line comment)\n",
+                id, sim_tools[id].diameter, sim_tools[id].shape);
+    }
+    sim_active_tool = id;
+    sim_push_tool_geometry();
+}
+
 static void sim_on_tool_selected (tool_data_t *tool)
 {
-    sim_active_tool = (int)tool->tool_id;
-    sim_push_tool_geometry();
+    sim_set_active_tool((int)tool->tool_id);
     if(on_tool_selected)
         on_tool_selected(tool);
 }
 
 static void sim_on_tool_changed (tool_data_t *tool)
 {
-    sim_active_tool = (int)tool->tool_id;
+    sim_set_active_tool((int)tool->tool_id);
     fprintf(stderr, "tool: active T%d%s\n", sim_active_tool,
             (sim_active_tool >= 0 && sim_active_tool <= SIM_MAX_TOOL && sim_tools[sim_active_tool].defined)
                 ? "" : " (no geometry - not carving)");
-    sim_push_tool_geometry();
     if(on_tool_changed)
         on_tool_changed(tool);
 }
@@ -763,6 +780,18 @@ static void probeConfigureInvertMask (bool is_probe_away, bool probing)
   }
 }
 
+// Active probe input. The simulated probe trips on geometry (the controlled point entering a target solid)
+// rather than a physical input, so the selection is cosmetic - it just rides along in the status report.
+static probe_id_t sim_probe_id = Probe_Default;
+
+// Select the active probe (main / toolsetter / probe2). Required for the built-in G65 P5 Q<n> probe-select
+// macro the ATC tool-change macro uses; without it G65 P5 Q1 returns error 39 (Status_GcodeValueOutOfRange).
+static bool probeSelect (probe_id_t probe_id)
+{
+    sim_probe_id = probe_id;
+    return true;
+}
+
 // Returns the probe connected and triggered pin states.
 probe_state_t probeGetState (void)
 {
@@ -771,6 +800,7 @@ probe_state_t probeGetState (void)
     state.value = mcu_gpio_get(&gpio[PROBE_PORT], PROBE_MASK);
 
     state.triggered ^= probe_invert;
+    state.probe_id = sim_probe_id;
 
     return state;
 }
@@ -1025,6 +1055,8 @@ bool driver_init ()
 
     hal.probe.get_state = probeGetState;
     hal.probe.configure = probeConfigureInvertMask;
+    hal.probe.select = probeSelect;
+    hal.driver_cap.toolsetter = On;             // advertise a toolsetter input so G65 P5 Q1 selects it
 
     static const spindle_ptrs_t spindle = {
         .type = SpindleType_PWM,

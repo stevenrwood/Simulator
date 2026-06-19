@@ -10,6 +10,10 @@ add_compile_definitions(F_CPU=16000000)
 # NGC_EXPRESSIONS_ENABLE=1 for O<name> CALL macros + the ATC tool-change flow.
 add_compile_definitions(LITTLEFS_ENABLE=2 SDCARD_ENABLE=0 NGC_EXPRESSIONS_ENABLE=1)
 
+# N_TOOLS>0 enables grblHAL's tool table so a CAM post can preload cutter radius/offset with
+# G10 L1 P<n> R<r> Z<z> (and the sim/macros can read it). 32 is grblHAL's maximum.
+add_compile_definitions(N_TOOLS=32)
+
 # Case-insensitive littlefs name matching (vendored lfs.c) so O<name> CALL macros resolve regardless
 # of the g-code parser upper-casing the label - matching an SD card FatFs, which the VFS treats the same.
 add_compile_definitions(LFS_CASE_INSENSITIVE)
