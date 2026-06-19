@@ -131,13 +131,13 @@ void platform_kill_thread(plat_thread_t* th)
 }
 
 //return char if one available.
-uint8_t platform_poll_stdin()
+int platform_poll_stdin()
 {
-    uint8_t char_in = 0;
+    int char_in = -1;  // no key pressed (NUL is a valid byte, so it cannot double as the "no data" sentinel)
 
     enable_kbhit(1);
     if (kbhit())
-        char_in = getchar();
+        char_in = (uint8_t)getchar();
 
     enable_kbhit(0);
 

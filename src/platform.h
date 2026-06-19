@@ -21,6 +21,6 @@ void platform_kill_thread(plat_thread_t* thread);
 uint32_t  platform_ns();  //monotonically increasing nanoseconds since program start.
 void platform_sleep(long microsec); //sleep for suggested time in microsec.
 
-uint8_t platform_poll_stdin(); //non-blocking stdin read - returns 0 if no char present, 0xFF for EOF
+int platform_poll_stdin(); //non-blocking stdin read - returns the byte (0-255), or -1 if no char present
 
 #endif

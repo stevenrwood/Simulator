@@ -90,8 +90,8 @@ PLAT_THREAD_FUNC(grbl_main_thread, exit)
 
 #ifdef WIN32
 
-//return char if one available.
-uint8_t sim_socket_in()
+//return char (0-255) if one available, -1 otherwise. NUL is a valid byte so it cannot be the sentinel.
+int sim_socket_in()
 {
     char c = 0;
     int retval;
@@ -102,7 +102,9 @@ uint8_t sim_socket_in()
         setsockopt(sim.socket_fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&t, sizeof(t));
         u_long mode = 1;
         ioctlsocket(sim.socket_fd, FIONBIO, &mode); // set non-blocking
-    } else if((retval = recv(sim.socket_fd, &c, 1, 0)) < 1) {
+    } else if((retval = recv(sim.socket_fd, &c, 1, 0)) == 1) {
+        return (uint8_t)c;
+    } else {
         if(retval == 0)
             sim.socket_fd = INVALID_SOCKET;
         else if((retval = WSAGetLastError()) != WSAEWOULDBLOCK) {
@@ -111,13 +113,13 @@ uint8_t sim_socket_in()
         }
     }
 
-    return c;
+    return -1;
 }
 
 #else
 
-//return char if one available.
-uint8_t sim_socket_in()
+//return char (0-255) if one available, -1 otherwise. NUL is a valid byte so it cannot be the sentinel.
+int sim_socket_in()
 {
     char c = 0;
     int retval;
@@ -125,7 +127,7 @@ uint8_t sim_socket_in()
     struct timeval tv = {
         .tv_sec = 0,
         .tv_usec = 0
-    }; 
+    };
 
     fd_set cfds = rfds;
 
@@ -160,13 +162,12 @@ uint8_t sim_socket_in()
                 close(sim.socket_fd);
                 FD_CLR(sim.socket_fd, &rfds);
                 sim.socket_fd = 0;
-            }
-//            if(c && c != '?' && c >= ' ')
-//                sim_serial_out(c == '\r' ? '\n' : c);
+            } else if(retval == 1)
+                return (uint8_t)c;
         }
     }
 
-    return c;
+    return -1;
 }
 
 #endif

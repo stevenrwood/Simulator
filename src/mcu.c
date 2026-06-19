@@ -185,11 +185,15 @@ void simulate_serial (void)
 
     if((uart.tx_irq = uart.tx_irq_enable))
         isr[UART_IRQ]();
+    else {
+        extern void sim_socket_flush (void);
+        sim_socket_flush();   // TX line idle: emit the buffered output burst as one socket write
+    }
 
     if(uart.rx_irq_enable && !uart.rx_irq && hal.stream.get_rx_buffer_free() > 100) {
-        uint8_t char_in = sim.getchar();
-        if (char_in) {
-            uart.rx_data = char_in;
+        int char_in = sim.getchar();
+        if (char_in >= 0) {                 // -1 == no data; 0x00 is a valid byte (e.g. YModem payload padding)
+            uart.rx_data = (uint8_t)char_in;
             uart.rx_irq = 1;
             isr[UART_IRQ]();
         }

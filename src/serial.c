@@ -187,7 +187,12 @@ static void uart_interrupt_handler (void)
         } else {
             data = uart.rx_data;
             uart.rx_irq = 0;
-            if(data == 0x06)
+            // 0x06 (ACK / Ctrl-F) requests a clean sim shutdown when typed interactively, but it is also a
+            // legal byte inside a binary stream - e.g. a YModem block's payload or CRC. Honour it only in
+            // normal mode: during a YModem transfer the stream is taken over (enqueue_realtime_command is
+            // redirected to the protocol's put_char), and treating a data 0x06 as "exit" killed the sim
+            // mid-transfer, so ioSender's upload hung waiting for an ACK that never came.
+            if(data == 0x06 && enqueue_realtime_command == protocol_enqueue_realtime_command)
                 sim.exit = exit_REQ;
             if(!enqueue_realtime_command((uint8_t)data)) {
                 rxbuffer.data[rxbuffer.head] = (uint8_t)data;  	// Add data to buffer
