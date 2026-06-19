@@ -47,19 +47,6 @@ T1 M6 (TOOL D=6.35 TYPE=FLAT)
 Both forms may be mixed. For a single tool use one or the other; if both set the same tool, the one the
 controller sees **last** wins.
 
-## Optional: native controller tool table
-
-The build also enables grbl's tool table (`N_TOOLS=32`), so the post may additionally preload tool
-radius/offset for the controller itself (useful on the real machine for tool-length offsets). This does
-**not** carry shape, so the simulator's carve still relies on the `(TOOL …)` comments above.
-
-```gcode
-G10 L1 P1 R3.175 Z0      ; P = tool number, R = radius (mm), Z = length offset
-```
-
-So: always emit `(TOOL …)` comments for the simulation; add `G10 L1` lines too only if you want the
-controller's native tool table populated.
-
 ## Minimal example header
 
 ```gcode
@@ -67,10 +54,15 @@ controller's native tool table populated.
 (TOOL T=1 D=6.35  TYPE=FLAT)
 (TOOL T=2 D=3.175 TYPE=BALL)
 (TOOL T=3 D=12.7  TYPE=VBIT A=60)
-G10 L1 P1 R3.175
-G10 L1 P2 R1.5875
-G10 L1 P3 R6.35
 ...
 T1 M6
 ...
 ```
+
+## Footnote: the native controller tool table is not needed
+
+The build enables grbl's tool table (`N_TOOLS=32`), so `G10 L1 P<n> R<r> Z<z>` works — but it carries no
+shape and the simulator's carve never reads it. With an ATC flow that probes each tool on the toolsetter
+and applies dynamic TLO (`G43.1`), the native table is unused, so there is normally **no reason to emit
+`G10 L1` lines**. Only add them if something on the real machine reads the native table (e.g. `G43 H<n>`
+pre-measured offsets or `#5401…`).
