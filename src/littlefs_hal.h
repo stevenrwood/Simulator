@@ -13,3 +13,7 @@
 #include "littlefs/lfs.h"
 
 struct lfs_config *sim_littlefs_hal (void);
+
+// Request a one-shot format: the next sim_littlefs_hal() discards any persisted littlefs.img and starts
+// from a freshly erased device, so the mount reformats it. Wired to the simulator's -format option.
+void sim_littlefs_format_on_boot (void);
