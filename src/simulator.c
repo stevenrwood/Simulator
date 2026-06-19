@@ -202,8 +202,47 @@ void sim_socket_flush (void)
     sock_len = 0;
 }
 
+// --- console action log -------------------------------------------------------------------------------
+// Echo socket traffic to stderr as a readable, one-line-per-command log, so the simulator's own console
+// window shows what it is doing when launched (minimized) by ioSender. Only printable ASCII is kept and
+// the 4 Hz status-report polling (the '?' request and "<...>" responses) is dropped, so the log shows real
+// activity rather than noise.
+static void sim_log_line (const char *dir, uint8_t *buf, unsigned *len, uint8_t c)
+{
+    if(c == '\r' || c == '\n') {
+        if(*len) {
+            buf[*len] = '\0';
+            if(buf[0] != '<')                   // drop status reports
+                fprintf(stderr, "%s %s\n", dir, buf);
+            *len = 0;
+        }
+    } else if(c >= 0x20 && c < 0x7f && *len < 250)
+        buf[(*len)++] = c;
+}
+
+void sim_log_rx (uint8_t c)
+{
+    static uint8_t buf[256];
+    static unsigned len = 0;
+
+    if(c == '?')                                // drop status-report requests
+        return;
+
+    sim_log_line("<<", buf, &len, c);
+}
+
+void sim_log_tx (uint8_t c)
+{
+    static uint8_t buf[256];
+    static unsigned len = 0;
+
+    sim_log_line(">>", buf, &len, c);
+}
+
 void sim_socket_out (uint8_t data)
 {
+    sim_log_tx(data);
+
     sock_buf[sock_len++] = data;
     if(sock_len >= sizeof(sock_buf))    // safety: flush a burst larger than the buffer (e.g. a file dump)
         sim_socket_flush();

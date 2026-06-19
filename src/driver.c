@@ -140,6 +140,13 @@ bool sim_setup_load (const char *path)
     fclose(f);
     sim_setup.active = true;
 
+    fprintf(stderr, "setup: loaded %s\n  spoilboard_z=%.3f stock_corner=(%.3f,%.3f) size=(%.1f,%.1f,%.1f)"
+                    " toolsetter=(%.3f,%.3f)+%.1f toolchange=(%.3f,%.3f)\n",
+            path, sim_setup.spoilboard_z, sim_setup.stock_corner_x, sim_setup.stock_corner_y,
+            sim_setup.stock_size_x, sim_setup.stock_size_y, sim_setup.stock_size_z,
+            sim_setup.toolsetter_x, sim_setup.toolsetter_y, sim_setup.toolsetter_height,
+            sim_setup.toolchange_x, sim_setup.toolchange_y);
+
     return true;
 }
 
@@ -167,6 +174,11 @@ static void sim_setup_apply_offsets (void)
     settings_write_coord_data(CoordinateSystem_G30, &d);
 
     sim_setup.applied = true;
+
+    fprintf(stderr, "setup: wrote offsets  G28=(%.3f,%.3f,%.3f)  G59.3=(%.3f,%.3f,0)  G30=(%.3f,%.3f,0)\n",
+            sim_setup.stock_corner_x - G28_CORNER_CLEAR, sim_setup.stock_corner_y - G28_CORNER_CLEAR,
+            sim_setup.spoilboard_z + G28_Z_ABOVE_SPOIL,
+            sim_setup.toolsetter_x, sim_setup.toolsetter_y, sim_setup.toolchange_x, sim_setup.toolchange_y);
 }
 
 // Build the probe targets. With a -setup file the fixtures are taken verbatim from it; otherwise they are

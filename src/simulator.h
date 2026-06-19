@@ -86,4 +86,8 @@ void simulate_serial (void);
 void sim_serial_out (uint8_t data);
 void sim_socket_out (uint8_t data);
 
+// Echo received / transmitted bytes to the console as a readable action log (see simulator.c).
+void sim_log_rx (uint8_t c);
+void sim_log_tx (uint8_t c);
+
 #endif

@@ -113,6 +113,7 @@ int sim_socket_in()
         u_long mode = 1;
         ioctlsocket(sim.socket_fd, FIONBIO, &mode); // set non-blocking
     } else if((retval = recv(sim.socket_fd, &c, 1, 0)) == 1) {
+        sim_log_rx((uint8_t)c);
         return (uint8_t)c;
     } else {
         if(retval == 0)
@@ -172,8 +173,10 @@ int sim_socket_in()
                 close(sim.socket_fd);
                 FD_CLR(sim.socket_fd, &rfds);
                 sim.socket_fd = 0;
-            } else if(retval == 1)
+            } else if(retval == 1) {
+                sim_log_rx((uint8_t)c);
                 return (uint8_t)c;
+            }
         }
     }
 
@@ -225,6 +228,18 @@ int main(int argc, char *argv[])
 
     progname = argv[0];
     g_argv = argv;   // capture before the parser below advances argv (for sim_reboot)
+
+    // Stamp the build date/time into the console title (and stdout) so it is easy to confirm which build is
+    // actually running - the simulator is launched from a bundled copy, so a stale exe is otherwise invisible.
+#ifdef WIN32
+    {
+        char title[160];
+        snprintf(title, sizeof(title), "grblHAL_sim - built %s %s", __DATE__, __TIME__);
+        SetConsoleTitleA(title);
+    }
+#endif
+    printf("grblHAL simulator - built %s %s\n", __DATE__, __TIME__);
+    fflush(stdout);
 
     while (argc > 1) {
         argv++; argc--;
