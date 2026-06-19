@@ -483,7 +483,11 @@ static LRESULT CALLBACK wndproc (HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch(msg) {
         case WM_CLOSE:
-            running = 0;                                // close view only; the simulator keeps running
+            // The 3D window is the standalone sim's UI - closing it shuts the simulator down so the socket
+            // drops and the connected sender (ioSender) sees the controller go away. exit() runs the atexit
+            // hooks (e.g. the EEPROM save). running=0 first lets the render thread unwind cleanly.
+            running = 0;
+            exit(0);
             return 0;
         case WM_LBUTTONDOWN:
             dragging = 1; last_mx = (short)LOWORD(lp); last_my = (short)HIWORD(lp); SetCapture(h);
