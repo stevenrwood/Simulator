@@ -398,7 +398,11 @@ void sim_update_inputs (void)
         system_convert_array_steps_to_mpos(p, sys.position);
         bool tripped = sim_in_box(&probe_geom.stock, p) || sim_in_box(&probe_geom.puck, p) ||
                        p[Z_AXIS] <= probe_geom.spoil_z;   // spoilboard: everywhere not over an object
-        mcu_gpio_in(&gpio[PROBE_PORT], PROBE_CONNECTED_BIT | (tripped ? PROBE_BIT : 0), PROBE_MASK);
+        // Drive the ELECTRICAL pin pre-inverted by $6 (probe invert), exactly as the limit inputs above are
+        // pre-inverted by $5: probeGetState() re-applies probe_invert, so grbl reads the true logical
+        // "triggered" = in-contact state for any probe polarity. Without this an inverted ($6=1) probe reads
+        // triggered while off-contact, so a probe cycle trips Alarm 4 the instant it arms.
+        mcu_gpio_in(&gpio[PROBE_PORT], PROBE_CONNECTED_BIT | ((tripped ^ probe_invert) ? PROBE_BIT : 0), PROBE_MASK);
     }
 }
 
@@ -431,7 +435,9 @@ static void probeConfigureInvertMask (bool is_probe_away, bool probing)
       }
   } else {
       sim_probe_armed = false;
-      mcu_gpio_in(&gpio[PROBE_PORT], PROBE_CONNECTED_BIT, PROBE_MASK);
+      // Disarmed: present "not in contact", pre-inverted by $6 so probeGetState() reports not-triggered
+      // (an inverted probe must read deasserted at idle, else Pn:P shows and the next probe cycle Alarm 4s).
+      mcu_gpio_in(&gpio[PROBE_PORT], PROBE_CONNECTED_BIT | (probe_invert ? PROBE_BIT : 0), PROBE_MASK);
   }
 }
 
