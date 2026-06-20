@@ -107,6 +107,7 @@ static struct {
     float stock_size_x, stock_size_y, stock_size_z;
     float toolsetter_x, toolsetter_y, toolsetter_height;
     float toolchange_x, toolchange_y;
+    float resolution_mm;     // material-removal cell size (mm); smaller = finer. 0 -> default.
 } sim_setup = {0};
 
 static bool view_geom_pushed = false;   // 3D geometry pushed to the view; cleared to force a re-push
@@ -148,10 +149,13 @@ bool sim_setup_load (const char *path)
         else if(!strcmp(key, "toolsetter_height")) sim_setup.toolsetter_height = v;
         else if(!strcmp(key, "toolchange_x"))      sim_setup.toolchange_x = v;
         else if(!strcmp(key, "toolchange_y"))      sim_setup.toolchange_y = v;
+        else if(!strcmp(key, "resolution_mm"))     sim_setup.resolution_mm = v;
     }
 
     fclose(f);
     sim_setup.active = true;
+    if(sim_setup.resolution_mm <= 0.0f)
+        sim_setup.resolution_mm = 1.0f;                 // default carve cell size if the cfg omits it
     strncpy(sim_setup.path, path, sizeof(sim_setup.path) - 1);
     sim_view_set_title(sim_setup.description);          // window title (stored now, applied when the view opens)
 
@@ -217,6 +221,7 @@ bool sim_setup_get_values (sim_setup_values_t *out)
     out->toolsetter_height = sim_setup.toolsetter_height;
     out->toolchange_x      = sim_setup.toolchange_x;
     out->toolchange_y      = sim_setup.toolchange_y;
+    out->resolution_mm     = sim_setup.resolution_mm;
     return true;
 }
 
@@ -244,6 +249,7 @@ static void sim_setup_save (void)
     fprintf(f, "toolsetter_height = %.3f\n", sim_setup.toolsetter_height);
     fprintf(f, "toolchange_x = %.3f\n", sim_setup.toolchange_x);
     fprintf(f, "toolchange_y = %.3f\n", sim_setup.toolchange_y);
+    fprintf(f, "resolution_mm = %.3f\n", sim_setup.resolution_mm);
     fclose(f);
     fprintf(stderr, "setup: saved %s\n", sim_setup.path);
 }
@@ -264,6 +270,7 @@ void sim_setup_set_values (const sim_setup_values_t *in)
     sim_setup.toolsetter_height = in->toolsetter_height;
     sim_setup.toolchange_x      = in->toolchange_x;
     sim_setup.toolchange_y      = in->toolchange_y;
+    sim_setup.resolution_mm     = in->resolution_mm;
 
     sim_setup_save();
 
@@ -418,6 +425,8 @@ static void sim_view_push_geometry (void)
         g.puck_max[Z_AXIS] = sim_setup.spoilboard_z + sim_setup.toolsetter_height;
     } else
         g.spoil_z = settings.axis[Z_AXIS].max_travel + SPOIL_LIFT;
+
+    g.cell_size = sim_setup.resolution_mm;              // material-removal fineness (0 = renderer default)
 
     sim_view_set_geometry(&g);
 }

@@ -159,8 +159,14 @@ static void heightmap_alloc (const sim_view_geometry_t *g)
         free(hmap); hmap = NULL; hm_nx = hm_ny = 0;
         return;
     }
-    const int MAXCELLS = 400;                           // finer grid; the vertex-array renderer keeps it cheap
-    float cell = fmaxf(0.4f, fmaxf(spanx, spany) / MAXCELLS);
+    // Cell size from the setup (Settings dialog), clamped to a sane range; 0 -> 1 mm default. The grid is
+    // also capped (MAXGRID per axis) so a tiny cell on a big stock can't explode the cell count.
+    const int MAXGRID = 600;
+    float cell = g->cell_size > 0.0f ? g->cell_size : 1.0f;
+    if(cell < 0.2f) cell = 0.2f;
+    if(cell > 20.0f) cell = 20.0f;
+    float mincell = fmaxf(spanx, spany) / MAXGRID;      // smallest cell that keeps both axes <= MAXGRID
+    if(cell < mincell) cell = mincell;
     int nx = (int)ceilf(spanx / cell), ny = (int)ceilf(spany / cell);
     if(nx < 1) nx = 1; if(ny < 1) ny = 1;
 
@@ -442,6 +448,7 @@ static void flip_stock (int mirror_x)
     }
     carve_have_last = 0;                                 // don't carve a phantom path across the flip
     hm_render_dirty = 1;
+    sim_view_log_append(mirror_x ? "stock: flipped on Y (mirror X)" : "stock: flipped on X (mirror Y)");
 }
 
 // Compile the carved stock into the display list: a flat top quad per cell, vertical walls where
@@ -686,6 +693,7 @@ static const struct { const char *label; size_t off; } setup_fields[] = {
     { "Toolsetter height", offsetof(sim_setup_values_t, toolsetter_height) },
     { "Toolchange X",      offsetof(sim_setup_values_t, toolchange_x)      },
     { "Toolchange Y",      offsetof(sim_setup_values_t, toolchange_y)      },
+    { "Cell size (mm)",    offsetof(sim_setup_values_t, resolution_mm)     },
 };
 #define N_SETUP_FIELDS ((int)(sizeof(setup_fields) / sizeof(setup_fields[0])))
 #define IDC_SAVE   200

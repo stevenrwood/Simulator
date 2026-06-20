@@ -15,6 +15,7 @@ typedef struct {
     float stock_size_x, stock_size_y, stock_size_z;
     float toolsetter_x, toolsetter_y, toolsetter_height;
     float toolchange_x, toolchange_y;
+    float resolution_mm;        // material-removal cell size (mm); smaller = finer (0 = default)
 } sim_setup_values_t;
 
 // Fetch the current setup values for editing. Returns false if no -setup is active.

@@ -17,6 +17,7 @@ typedef struct {
     float spoil_z;                      // spoilboard plane Z (mm)
     float stock_min[3], stock_max[3];   // stock block (mm)
     float puck_min[3], puck_max[3];     // toolsetter puck bounding box (mm)
+    float cell_size;                    // material-removal cell size (mm); 0 = renderer default
 } sim_view_geometry_t;
 
 // Create the view window + render thread. Safe to call once; ignored if already running.
