@@ -9,6 +9,7 @@
 #include <stdbool.h>
 
 typedef struct {
+    char  description[64];      // free-text machine name shown in the 3D view window title
     float spoilboard_z;
     float stock_corner_x, stock_corner_y;
     float stock_size_x, stock_size_y, stock_size_z;

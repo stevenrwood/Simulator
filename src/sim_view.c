@@ -63,19 +63,19 @@ static volatile int logdirty = 0;
 // ---- stock material-removal heightmap (dexel model) ----------------------------------------------
 // The stock is a grid of Z-heights over its XY footprint. As the cutter passes through, cells within the
 // tool radius are lowered to the cutter's bottom profile (flat / ball / V), giving a true 3-axis carve.
-// hmap is mutated on the grbl thread (via sim_view_set_tool) under `lock`; the render thread copies it to
-// hmap_draw each frame and draws from that, so the lock is never held across a GL frame.
-static float *hmap = NULL;                               // carve buffer (grbl thread writes, under lock)
+// The heightmap is owned entirely by the render thread: the grbl/realtime thread only publishes the live
+// tool tip + cutter geometry (cheap stores under `lock`), and the render thread carves the swept path each
+// frame. This keeps all carving cost off the realtime loop (which must stay responsive to keep the planner
+// fed) and means the heightmap itself never needs locking.
+static float *hmap = NULL;                               // heightmap (render thread only)
 static int    hm_nx = 0, hm_ny = 0;
 static float  hm_x0, hm_y0, hm_cell, hm_top, hm_bot;
-static volatile int hm_dirty = 0;
-static float *hmap_draw = NULL;                          // render-owned copy (view thread only)
-static int    hmd_nx = 0, hmd_ny = 0;
-static float  hmd_x0, hmd_y0, hmd_cell, hmd_bot;
-static float  cut_dia = 0.0f, cut_vangle = 0.0f;        // active cutter geometry
+static int    geom_dirty = 0;                            // set by set_geometry (grbl), consumed by render
+static int    stock_reset = 0;                           // set by reset_stock, consumed by render
+static float  cut_dia = 0.0f, cut_vangle = 0.0f;         // active cutter geometry (published under lock)
 static int    cut_shape = SIM_TOOL_FLAT;
-static float  last_tx, last_ty, last_tz;                 // previous tool tip, for swept-path carving
-static int    have_last = 0;
+static float  carve_lx, carve_ly, carve_lz;              // render thread's carve cursor (last carved tip)
+static int    carve_have_last = 0;
 
 // ---- data feed (called from the grbl/realtime threads) -------------------------------------------
 
@@ -84,49 +84,19 @@ bool sim_view_active (void)
     return running != 0;
 }
 
-// (Re)allocate the stock heightmap for the given fixture geometry and fill it with an uncut block. Caller
-// holds `lock`. Cell size targets ~0.5 mm but the grid is capped so a large stock stays cheap to draw.
-static void heightmap_alloc (const sim_view_geometry_t *g)
+// Window title (from the setup "description", e.g. "Mega V XL"). Stored even before the window exists so
+// gl_create() can apply it; updated live when edited in the Settings dialog.
+static char view_title[96] = "grblHAL_sim - 3D machine view";
+
+void sim_view_set_title (const char *s)
 {
-    float spanx = g->stock_max[0] - g->stock_min[0];
-    float spany = g->stock_max[1] - g->stock_min[1];
-    if(spanx <= 0.0f || spany <= 0.0f) {
-        hm_nx = hm_ny = 0;
-        return;
-    }
-    const int MAXCELLS = 160;
-    float cell = fmaxf(0.5f, fmaxf(spanx, spany) / MAXCELLS);
-    int nx = (int)ceilf(spanx / cell), ny = (int)ceilf(spany / cell);
-    if(nx < 1) nx = 1; if(ny < 1) ny = 1;
-
-    if(nx != hm_nx || ny != hm_ny) {                    // (re)size the carve buffer
-        free(hmap);
-        hmap = (float *)malloc((size_t)nx * ny * sizeof(float));
-    }
-    hm_nx = nx; hm_ny = ny;
-    hm_x0 = g->stock_min[0]; hm_y0 = g->stock_min[1];
-    hm_cell = cell;
-    hm_top = g->stock_max[2]; hm_bot = g->stock_min[2];
-
-    if(hmap)
-        for(int i = 0; i < nx * ny; i++)
-            hmap[i] = hm_top;
-    have_last = 0;
-    hm_dirty = 1;
+    if(s && *s)
+        snprintf(view_title, sizeof(view_title), "%s", s);
+    if(hwnd)
+        SetWindowTextA(hwnd, view_title);
 }
 
-void sim_view_reset_stock (void)
-{
-    if(!running)
-        return;
-    EnterCriticalSection(&lock);
-    if(hmap)
-        for(int i = 0; i < hm_nx * hm_ny; i++)
-            hmap[i] = hm_top;
-    have_last = 0;
-    hm_dirty = 1;
-    LeaveCriticalSection(&lock);
-}
+// ---- setters (grbl/realtime thread) - cheap publishes only; the render thread does the heavy carving ----
 
 void sim_view_set_geometry (const sim_view_geometry_t *g)
 {
@@ -134,10 +104,16 @@ void sim_view_set_geometry (const sim_view_geometry_t *g)
         return;
     EnterCriticalSection(&lock);
     geom = *g;
-    if(g->have_fixtures)
-        heightmap_alloc(g);
-    else
-        hm_nx = hm_ny = 0;
+    geom_dirty = 1;                                     // the render thread (re)builds the heightmap
+    LeaveCriticalSection(&lock);
+}
+
+void sim_view_reset_stock (void)
+{
+    if(!running)
+        return;
+    EnterCriticalSection(&lock);
+    stock_reset = 1;                                    // the render thread restores an uncut block
     LeaveCriticalSection(&lock);
 }
 
@@ -150,19 +126,51 @@ void sim_view_set_tool_geometry (float diameter, int shape, float vangle)
     LeaveCriticalSection(&lock);
 }
 
-// Lower the heightmap cells the cutter (centred at x,y, tip at z) currently overlaps. Caller holds `lock`.
-static void carve_at (float x, float y, float z)
+void sim_view_set_tool (float x, float y, float z)
 {
-    float r = cut_dia * 0.5f;
-    if(hmap == NULL || r <= 0.0f || z >= hm_top)
+    if(!running)
         return;
+    EnterCriticalSection(&lock);
+    tool[0] = x; tool[1] = y; tool[2] = z;              // just publish the tip; carving happens in render()
+    LeaveCriticalSection(&lock);
+}
 
-    float tanhalf = 0.0f;                               // V-bit: tip rises by d/tan(halfangle) off-axis
-    if(cut_shape == SIM_TOOL_VBIT) {
-        float half = cut_vangle * 0.5f;
-        if(half > 1.0f && half < 89.0f)
-            tanhalf = tanf(half * (3.14159265f / 180.0f));
+// ---- heightmap carve (render thread) -------------------------------------------------------------
+
+// (Re)allocate the stock heightmap for the given fixture geometry and fill it with an uncut block. Cell
+// size targets ~0.5 mm but the grid is capped so a large stock stays cheap to draw. Render thread only.
+static void heightmap_alloc (const sim_view_geometry_t *g)
+{
+    float spanx = g->stock_max[0] - g->stock_min[0];
+    float spany = g->stock_max[1] - g->stock_min[1];
+    if(spanx <= 0.0f || spany <= 0.0f) {
+        free(hmap); hmap = NULL; hm_nx = hm_ny = 0;
+        return;
     }
+    const int MAXCELLS = 160;
+    float cell = fmaxf(0.5f, fmaxf(spanx, spany) / MAXCELLS);
+    int nx = (int)ceilf(spanx / cell), ny = (int)ceilf(spany / cell);
+    if(nx < 1) nx = 1; if(ny < 1) ny = 1;
+
+    if(nx != hm_nx || ny != hm_ny) {                    // (re)size the buffer
+        free(hmap);
+        hmap = (float *)malloc((size_t)nx * ny * sizeof(float));
+    }
+    hm_nx = nx; hm_ny = ny;
+    hm_x0 = g->stock_min[0]; hm_y0 = g->stock_min[1];
+    hm_cell = cell;
+    hm_top = g->stock_max[2]; hm_bot = g->stock_min[2];
+
+    if(hmap)
+        for(int i = 0; i < nx * ny; i++)
+            hmap[i] = hm_top;
+}
+
+// Lower the heightmap cells the cutter (centred at x,y, tip at z; radius r) currently overlaps.
+static void carve_at (float x, float y, float z, float r, int shape, float tanhalf)
+{
+    if(z >= hm_top)
+        return;
 
     int ix0 = (int)floorf((x - r - hm_x0) / hm_cell), ix1 = (int)ceilf((x + r - hm_x0) / hm_cell);
     int iy0 = (int)floorf((y - r - hm_y0) / hm_cell), iy1 = (int)ceilf((y + r - hm_y0) / hm_cell);
@@ -177,42 +185,47 @@ static void carve_at (float x, float y, float z)
             if(d2 > r * r)
                 continue;
             float th = z;                               // flat endmill: bottom is a plane at z
-            if(cut_shape == SIM_TOOL_BALL)
+            if(shape == SIM_TOOL_BALL)
                 th = z + (r - sqrtf(r * r - d2));        // ball-nose: bottom curves up off-axis
             else if(tanhalf > 0.0f)
                 th = z + sqrtf(d2) / tanhalf;            // V-bit cone
             if(th < hm_bot) th = hm_bot;                 // never cut below the spoilboard
             int idx = iy * hm_nx + ix;
-            if(th < hmap[idx]) {
+            if(th < hmap[idx])
                 hmap[idx] = th;
-                hm_dirty = 1;
-            }
         }
     }
 }
 
-void sim_view_set_tool (float x, float y, float z)
+// Carve the cutter's swept path from the last carved tip to the current one. Render thread, each frame.
+static void heightmap_advance (float x, float y, float z, float dia, int shape, float vangle)
 {
-    if(!running)
+    float r = dia * 0.5f;
+    if(hmap == NULL || r <= 0.0f) {
+        carve_lx = x; carve_ly = y; carve_lz = z; carve_have_last = 1;
         return;
-    EnterCriticalSection(&lock);
-    tool[0] = x; tool[1] = y; tool[2] = z;
-
-    if(hmap && cut_dia > 0.0f) {
-        if(have_last && !(last_tz >= hm_top && z >= hm_top)) {   // carve the swept path (skip rapids above stock)
-            float dx = x - last_tx, dy = y - last_ty, dz = z - last_tz;
-            float dist = sqrtf(dx * dx + dy * dy);
-            int steps = (int)(dist / (hm_cell * 0.5f)) + 1;
-            if(steps > 4000) steps = 4000;
-            for(int s = 1; s <= steps; s++) {
-                float f = (float)s / steps;
-                carve_at(last_tx + dx * f, last_ty + dy * f, last_tz + dz * f);
-            }
-        } else
-            carve_at(x, y, z);
     }
-    last_tx = x; last_ty = y; last_tz = z; have_last = 1;
-    LeaveCriticalSection(&lock);
+
+    float tanhalf = 0.0f;                               // V-bit: tip rises by d/tan(halfangle) off-axis
+    if(shape == SIM_TOOL_VBIT) {
+        float half = vangle * 0.5f;
+        if(half > 1.0f && half < 89.0f)
+            tanhalf = tanf(half * (3.14159265f / 180.0f));
+    }
+
+    if(carve_have_last && !(carve_lz >= hm_top && z >= hm_top)) {   // skip rapids entirely above the stock
+        float dx = x - carve_lx, dy = y - carve_ly, dz = z - carve_lz;
+        float dist = sqrtf(dx * dx + dy * dy);
+        int steps = (int)(dist / (hm_cell * 0.5f)) + 1;
+        if(steps > 20000) steps = 20000;
+        for(int s = 1; s <= steps; s++) {
+            float fr = (float)s / steps;
+            carve_at(carve_lx + dx * fr, carve_ly + dy * fr, carve_lz + dz * fr, r, shape, tanhalf);
+        }
+    } else
+        carve_at(x, y, z, r, shape, tanhalf);
+
+    carve_lx = x; carve_ly = y; carve_lz = z; carve_have_last = 1;
 }
 
 void sim_view_set_message (const char *s)
@@ -358,34 +371,34 @@ static void frame_camera (const sim_view_geometry_t *g)
 // where neighbouring cells differ (pocket walls), and an outer skirt down to the stock bottom.
 static void draw_heightmap (void)
 {
-    if(hmap_draw == NULL || hmd_nx == 0)
+    if(hmap == NULL || hm_nx == 0)
         return;
-    float c = hmd_cell;
-    float xR = hmd_x0 + hmd_nx * c, yT = hmd_y0 + hmd_ny * c;
+    float c = hm_cell;
+    float xR = hm_x0 + hm_nx * c, yT = hm_y0 + hm_ny * c;
 
     glNormal3f(0.0f, 0.0f, 1.0f);                        // top surface
     glBegin(GL_QUADS);
-    for(int iy = 0; iy < hmd_ny; iy++) {
-        float y0 = hmd_y0 + iy * c, y1 = y0 + c;
-        for(int ix = 0; ix < hmd_nx; ix++) {
-            float x0 = hmd_x0 + ix * c, x1 = x0 + c, h = hmap_draw[iy * hmd_nx + ix];
+    for(int iy = 0; iy < hm_ny; iy++) {
+        float y0 = hm_y0 + iy * c, y1 = y0 + c;
+        for(int ix = 0; ix < hm_nx; ix++) {
+            float x0 = hm_x0 + ix * c, x1 = x0 + c, h = hmap[iy * hm_nx + ix];
             glVertex3f(x0, y0, h); glVertex3f(x1, y0, h); glVertex3f(x1, y1, h); glVertex3f(x0, y1, h);
         }
     }
     glEnd();
 
     glBegin(GL_QUADS);                                   // interior pocket walls
-    for(int iy = 0; iy < hmd_ny; iy++) {
-        float y0 = hmd_y0 + iy * c, y1 = y0 + c;
-        for(int ix = 0; ix < hmd_nx; ix++) {
-            float x1 = hmd_x0 + (ix + 1) * c, h = hmap_draw[iy * hmd_nx + ix];
-            if(ix + 1 < hmd_nx) {
-                float hn = hmap_draw[iy * hmd_nx + ix + 1];
+    for(int iy = 0; iy < hm_ny; iy++) {
+        float y0 = hm_y0 + iy * c, y1 = y0 + c;
+        for(int ix = 0; ix < hm_nx; ix++) {
+            float x1 = hm_x0 + (ix + 1) * c, h = hmap[iy * hm_nx + ix];
+            if(ix + 1 < hm_nx) {
+                float hn = hmap[iy * hm_nx + ix + 1];
                 if(hn != h) { glNormal3f(1, 0, 0);
                     glVertex3f(x1, y0, h); glVertex3f(x1, y1, h); glVertex3f(x1, y1, hn); glVertex3f(x1, y0, hn); }
             }
-            if(iy + 1 < hmd_ny) {
-                float hn = hmap_draw[(iy + 1) * hmd_nx + ix], x0 = hmd_x0 + ix * c;
+            if(iy + 1 < hm_ny) {
+                float hn = hmap[(iy + 1) * hm_nx + ix], x0 = hm_x0 + ix * c;
                 if(hn != h) { glNormal3f(0, 1, 0);
                     glVertex3f(x0, y1, h); glVertex3f(x1, y1, h); glVertex3f(x1, y1, hn); glVertex3f(x0, y1, hn); }
             }
@@ -394,21 +407,21 @@ static void draw_heightmap (void)
     glEnd();
 
     glBegin(GL_QUADS);                                   // outer skirt down to the spoilboard
-    for(int ix = 0; ix < hmd_nx; ix++) {
-        float x0 = hmd_x0 + ix * c, x1 = x0 + c;
-        float hB = hmap_draw[ix], hT = hmap_draw[(hmd_ny - 1) * hmd_nx + ix];
+    for(int ix = 0; ix < hm_nx; ix++) {
+        float x0 = hm_x0 + ix * c, x1 = x0 + c;
+        float hB = hmap[ix], hT = hmap[(hm_ny - 1) * hm_nx + ix];
         glNormal3f(0, -1, 0);
-        glVertex3f(x0, hmd_y0, hmd_bot); glVertex3f(x1, hmd_y0, hmd_bot); glVertex3f(x1, hmd_y0, hB); glVertex3f(x0, hmd_y0, hB);
+        glVertex3f(x0, hm_y0, hm_bot); glVertex3f(x1, hm_y0, hm_bot); glVertex3f(x1, hm_y0, hB); glVertex3f(x0, hm_y0, hB);
         glNormal3f(0, 1, 0);
-        glVertex3f(x0, yT, hT); glVertex3f(x1, yT, hT); glVertex3f(x1, yT, hmd_bot); glVertex3f(x0, yT, hmd_bot);
+        glVertex3f(x0, yT, hT); glVertex3f(x1, yT, hT); glVertex3f(x1, yT, hm_bot); glVertex3f(x0, yT, hm_bot);
     }
-    for(int iy = 0; iy < hmd_ny; iy++) {
-        float y0 = hmd_y0 + iy * c, y1 = y0 + c;
-        float hL = hmap_draw[iy * hmd_nx], hR = hmap_draw[iy * hmd_nx + (hmd_nx - 1)];
+    for(int iy = 0; iy < hm_ny; iy++) {
+        float y0 = hm_y0 + iy * c, y1 = y0 + c;
+        float hL = hmap[iy * hm_nx], hR = hmap[iy * hm_nx + (hm_nx - 1)];
         glNormal3f(-1, 0, 0);
-        glVertex3f(hmd_x0, y0, hL); glVertex3f(hmd_x0, y1, hL); glVertex3f(hmd_x0, y1, hmd_bot); glVertex3f(hmd_x0, y0, hmd_bot);
+        glVertex3f(hm_x0, y0, hL); glVertex3f(hm_x0, y1, hL); glVertex3f(hm_x0, y1, hm_bot); glVertex3f(hm_x0, y0, hm_bot);
         glNormal3f(1, 0, 0);
-        glVertex3f(xR, y0, hmd_bot); glVertex3f(xR, y1, hmd_bot); glVertex3f(xR, y1, hR); glVertex3f(xR, y0, hR);
+        glVertex3f(xR, y0, hm_bot); glVertex3f(xR, y1, hm_bot); glVertex3f(xR, y1, hR); glVertex3f(xR, y0, hR);
     }
     glEnd();
 }
@@ -416,22 +429,31 @@ static void draw_heightmap (void)
 static void render (void)
 {
     sim_view_geometry_t g;
-    float t[3];
+    float t[3], cd, cv;
+    int cs, gd, sr;
     char msg[160];
-    int have_stock = 0;
-    EnterCriticalSection(&lock);
+    EnterCriticalSection(&lock);                        // brief snapshot of the published state
     g = geom; t[0] = tool[0]; t[1] = tool[1]; t[2] = tool[2];
+    cd = cut_dia; cs = cut_shape; cv = cut_vangle;
+    gd = geom_dirty; geom_dirty = 0;
+    sr = stock_reset; stock_reset = 0;
     strncpy(msg, message, sizeof msg); msg[sizeof msg - 1] = '\0';
-    if(hmap && hm_nx > 0) {                              // refresh the render-owned heightmap copy
-        if(hmd_nx != hm_nx || hmd_ny != hm_ny) {
-            free(hmap_draw);
-            hmap_draw = (float *)malloc((size_t)hm_nx * hm_ny * sizeof(float));
-            hmd_nx = hm_nx; hmd_ny = hm_ny;
-        }
-        hmd_x0 = hm_x0; hmd_y0 = hm_y0; hmd_cell = hm_cell; hmd_bot = hm_bot;
-        if(hmap_draw) { memcpy(hmap_draw, hmap, (size_t)hm_nx * hm_ny * sizeof(float)); have_stock = 1; }
-    }
     LeaveCriticalSection(&lock);
+
+    // Heightmap lives entirely on this (render) thread - (re)build on a geometry change, reset on request,
+    // then carve the cutter's swept path up to the current tool position.
+    if(gd) {
+        if(g.have_fixtures)
+            heightmap_alloc(&g);
+        else { free(hmap); hmap = NULL; hm_nx = hm_ny = 0; }
+        carve_have_last = 0;
+    }
+    if(sr && hmap) {
+        for(int i = 0; i < hm_nx * hm_ny; i++) hmap[i] = hm_top;
+        carve_have_last = 0;
+    }
+    heightmap_advance(t[0], t[1], t[2], cd, cs, cv);
+    int have_stock = hmap != NULL && hm_nx > 0;
 
     frame_camera(&g);
 
@@ -536,7 +558,7 @@ static const struct { const char *label; size_t off; } setup_fields[] = {
 #define IDC_SAVE   200
 #define IDC_CANCEL 201
 
-static HWND cfg_hwnd = NULL, cfg_edit[N_SETUP_FIELDS];
+static HWND cfg_hwnd = NULL, cfg_edit[N_SETUP_FIELDS], cfg_desc = NULL;
 static int  cfg_done = 0;            // 0 = open, 1 = save, 2 = cancel
 
 static LRESULT CALLBACK cfgproc (HWND h, UINT msg, WPARAM wp, LPARAM lp)
@@ -575,7 +597,8 @@ static void settings_dialog_show (void)
 
     const int rowh = 26, top = 14, lblw = 130, editw = 90, pad = 14;
     int clientw = pad + lblw + 8 + editw + pad;
-    int clienth = top + N_SETUP_FIELDS * rowh + 12 + 30 + pad;
+    int descrow = 1;                                    // a Description text field above the numeric rows
+    int clienth = top + (N_SETUP_FIELDS + descrow) * rowh + 12 + 30 + pad;
     RECT r = { 0, 0, clientw, clienth };
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
     AdjustWindowRect(&r, style, FALSE);
@@ -584,8 +607,16 @@ static void settings_dialog_show (void)
                                r.right - r.left, r.bottom - r.top, hwnd, NULL, hi, NULL);
 
     HFONT f = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+
+    HWND dlbl = CreateWindowA("STATIC", "Description", WS_CHILD | WS_VISIBLE | SS_RIGHT,
+                              pad, top + 3, lblw, 18, cfg_hwnd, NULL, hi, NULL);
+    cfg_desc = CreateWindowA("EDIT", v.description, WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL,
+                             pad + lblw + 8, top, editw, 20, cfg_hwnd, NULL, hi, NULL);
+    SendMessageA(dlbl, WM_SETFONT, (WPARAM)f, TRUE);
+    SendMessageA(cfg_desc, WM_SETFONT, (WPARAM)f, TRUE);
+
     for(int i = 0; i < N_SETUP_FIELDS; i++) {
-        int y = top + i * rowh;
+        int y = top + (i + descrow) * rowh;
         HWND lbl = CreateWindowA("STATIC", setup_fields[i].label, WS_CHILD | WS_VISIBLE | SS_RIGHT,
                                  pad, y + 3, lblw, 18, cfg_hwnd, NULL, hi, NULL);
         char txt[32];
@@ -595,7 +626,7 @@ static void settings_dialog_show (void)
         SendMessageA(lbl, WM_SETFONT, (WPARAM)f, TRUE);
         SendMessageA(cfg_edit[i], WM_SETFONT, (WPARAM)f, TRUE);
     }
-    int by = top + N_SETUP_FIELDS * rowh + 8;
+    int by = top + (N_SETUP_FIELDS + descrow) * rowh + 8;
     HWND bs = CreateWindowA("BUTTON", "Save", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                             clientw - pad - 2 * 80 - 8, by, 80, 26, cfg_hwnd, (HMENU)IDC_SAVE, hi, NULL);
     HWND bc = CreateWindowA("BUTTON", "Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
@@ -617,6 +648,7 @@ static void settings_dialog_show (void)
     }
 
     if(cfg_done == 1) {                                 // Save: read the fields back and apply
+        GetWindowTextA(cfg_desc, v.description, sizeof v.description);
         for(int i = 0; i < N_SETUP_FIELDS; i++) {
             char txt[32];
             GetWindowTextA(cfg_edit[i], txt, sizeof txt);
@@ -746,7 +778,7 @@ static int gl_create (void)
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     RegisterClassA(&wc);
 
-    hwnd = CreateWindowA("grblHALSimView", "grblHAL_sim - 3D machine view",
+    hwnd = CreateWindowA("grblHALSimView", view_title,
                          WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
                          960, 720, NULL, NULL, wc.hInstance, NULL);
     if(!hwnd)
@@ -849,5 +881,6 @@ void sim_view_set_message (const char *s) { (void)s; }
 void sim_view_log_append (const char *s) { (void)s; }
 void sim_view_set_tool_geometry (float diameter, int shape, float vangle) { (void)diameter; (void)shape; (void)vangle; }
 void sim_view_reset_stock (void) {}
+void sim_view_set_title (const char *s) { (void)s; }
 
 #endif

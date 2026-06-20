@@ -101,6 +101,7 @@ static struct {
     bool active;
     bool applied;            // offsets written to NVS yet (one-shot at boot, re-armed by a Settings edit)
     char path[260];          // setup file the values came from (so a Settings edit can persist them)
+    char description[64];    // free-text machine name shown in the 3D view window title (e.g. "Mega V XL")
     float spoilboard_z;
     float stock_corner_x, stock_corner_y;
     float stock_size_x, stock_size_y, stock_size_z;
@@ -126,6 +127,13 @@ bool sim_setup_load (const char *path)
         char *c;
         if((c = strchr(line, '#'))) *c = '\0';
         if((c = strchr(line, ';'))) *c = '\0';
+        char strval[64];
+        if(sscanf(line, " description = %63[^\r\n]", strval) == 1) {   // free-text value, not a number
+            char *e = strval + strlen(strval);                        // trim trailing whitespace
+            while(e > strval && (e[-1] == ' ' || e[-1] == '\t')) *--e = '\0';
+            strncpy(sim_setup.description, strval, sizeof(sim_setup.description) - 1);
+            continue;
+        }
         if(sscanf(line, " %63[A-Za-z_] = %lf", key, &val) != 2)
             continue;
         float v = (float)val;
@@ -145,6 +153,7 @@ bool sim_setup_load (const char *path)
     fclose(f);
     sim_setup.active = true;
     strncpy(sim_setup.path, path, sizeof(sim_setup.path) - 1);
+    sim_view_set_title(sim_setup.description);          // window title (stored now, applied when the view opens)
 
     fprintf(stderr, "setup: loaded %s\n  spoilboard_z=%.3f stock_corner=(%.3f,%.3f) size=(%.1f,%.1f,%.1f)"
                     " toolsetter=(%.3f,%.3f)+%.1f toolchange=(%.3f,%.3f)\n",
@@ -195,6 +204,8 @@ bool sim_setup_get_values (sim_setup_values_t *out)
 {
     if(!sim_setup.active)
         return false;
+    strncpy(out->description, sim_setup.description, sizeof(out->description) - 1);
+    out->description[sizeof(out->description) - 1] = '\0';
     out->spoilboard_z      = sim_setup.spoilboard_z;
     out->stock_corner_x    = sim_setup.stock_corner_x;
     out->stock_corner_y    = sim_setup.stock_corner_y;
@@ -220,6 +231,8 @@ static void sim_setup_save (void)
         return;
     }
     fprintf(f, "# grblHAL simulator fixture setup - edited from the 3D view Settings dialog\n");
+    if(sim_setup.description[0])
+        fprintf(f, "description = %s\n", sim_setup.description);
     fprintf(f, "spoilboard_z = %.3f\n", sim_setup.spoilboard_z);
     fprintf(f, "stock_corner_x = %.3f\n", sim_setup.stock_corner_x);
     fprintf(f, "stock_corner_y = %.3f\n", sim_setup.stock_corner_y);
@@ -237,6 +250,9 @@ static void sim_setup_save (void)
 
 void sim_setup_set_values (const sim_setup_values_t *in)
 {
+    strncpy(sim_setup.description, in->description, sizeof(sim_setup.description) - 1);
+    sim_setup.description[sizeof(sim_setup.description) - 1] = '\0';
+    sim_view_set_title(sim_setup.description);
     sim_setup.spoilboard_z      = in->spoilboard_z;
     sim_setup.stock_corner_x    = in->stock_corner_x;
     sim_setup.stock_corner_y    = in->stock_corner_y;

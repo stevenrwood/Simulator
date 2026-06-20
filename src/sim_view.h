@@ -41,6 +41,9 @@ void sim_view_set_tool_geometry (float diameter, int shape, float vangle);
 // Reset the stock heightmap back to an uncut block (e.g. before re-running a job).
 void sim_view_reset_stock (void);
 
+// Set the 3D view window title (the setup "description", e.g. "Mega V XL").
+void sim_view_set_title (const char *s);
+
 // Publish the latest controller [MSG:...] line for the status line at the bottom of the view.
 void sim_view_set_message (const char *s);
 
