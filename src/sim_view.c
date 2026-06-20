@@ -875,7 +875,7 @@ static int gl_create (void)
     AppendMenuA(hmenu, MF_STRING, ID_RESETSTOCK,  "Reset Stock");
     AppendMenuA(hmenu, MF_STRING, ID_FLIPX,       "Flip Stock on X");
     AppendMenuA(hmenu, MF_STRING, ID_FLIPY,       "Flip Stock on Y");
-    AppendMenuA(hmenu, MF_STRING, ID_FORMAT,      "Format");
+    AppendMenuA(hmenu, MF_STRING, ID_FORMAT,      "Format LittleFS");
     AppendMenuA(hmenu, MF_STRING, ID_SHOWLOG,     "Show Log");
     SetMenu(hwnd, hmenu);
 
