@@ -7,6 +7,23 @@ lines** that the simulator parses and every real controller ignores.
 
 Put these at the **top of the program**, before the first tool change.
 
+## Stock size comment
+
+The post can also declare the stock dimensions so the operator need not set them by hand:
+
+```gcode
+(STOCK X=428 Y=428 Z=19)
+```
+
+`X`/`Y`/`Z` are the stock dimensions in mm. This sets the size of the simulated stock (the carve grid).
+The stock's **machine location** and the fixtures (G28/G59.3/tool-change) stay in the `-setup` file — those
+are physical positions the post can't know, and `start_job`'s probe finds the corner.
+
+Timing note: the stock **size** drives both the carve and the probe's expected top, so it must reach the
+simulator **before** a `start_job` probe cycle. Easiest options: send the `(STOCK …)` line via **MDI**
+before running `start_job`, or run the program (which streams it first). If you only ever run a program
+with the probe sequence at its top (after this comment), it just works.
+
 ## Tool-table comments
 
 ```gcode

@@ -96,6 +96,8 @@ target_link_libraries(grblHAL_sim PRIVATE
 # The optional 3D machine view (-view) uses Win32 + OpenGL (system libraries only).
 if(WIN32)
     target_link_libraries(grblHAL_sim PRIVATE opengl32 glu32 gdi32 advapi32)
+    enable_language(RC)                                 # compile the app icon (src/sim.rc -> sim.ico)
+    target_sources(grblHAL_sim PRIVATE src/sim.rc)
 endif()
 
 add_executable(grblHAL_validator 

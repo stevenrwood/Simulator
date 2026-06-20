@@ -356,6 +356,26 @@ static status_code_t sim_on_gcode_comment (char *comment)
             pending_tool = t;
             fprintf(stderr, "tool: pending D=%.3f TYPE=%d A=%.1f (next M6)\n", t.diameter, t.shape, t.vangle);
         }
+    } else if(tok && !strcasecmp(tok, "STOCK")) {
+        // "(STOCK X=428 Y=428 Z=19)" - stock dimensions (mm) from the CAM post, so the operator need not
+        // set the size by hand. The machine corner / fixtures stay in the -setup file (they are physical
+        // positions the post can't know; start_job's probe finds the corner). The size drives the carve
+        // heightmap and the probe's expected top, so send it before start_job (e.g. via MDI) if probing.
+        float sx = 0.0f, sy = 0.0f, sz = 0.0f;
+        while((tok = strtok(NULL, " \t")) != NULL) {
+            char *eq = strchr(tok, '=');
+            if(eq == NULL)
+                continue;
+            *eq++ = '\0';
+            if(!strcasecmp(tok, "X"))      sx = (float)atof(eq);
+            else if(!strcasecmp(tok, "Y")) sy = (float)atof(eq);
+            else if(!strcasecmp(tok, "Z")) sz = (float)atof(eq);
+        }
+        if(sx > 0.0f && sy > 0.0f && sz > 0.0f) {
+            sim_setup.stock_size_x = sx; sim_setup.stock_size_y = sy; sim_setup.stock_size_z = sz;
+            view_geom_pushed = false;                       // re-push geometry -> heightmap rebuilds at new size
+            fprintf(stderr, "stock: size from gcode = (%.1f, %.1f, %.1f)\n", sx, sy, sz);
+        }
     }
 
     return on_gcode_comment ? on_gcode_comment(comment) : Status_OK;

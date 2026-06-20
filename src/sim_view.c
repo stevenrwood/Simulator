@@ -964,6 +964,7 @@ static int gl_create (void)
     wc.hInstance = GetModuleHandle(NULL);
     wc.lpszClassName = "grblHALSimView";
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hIcon = LoadIconA(GetModuleHandle(NULL), MAKEINTRESOURCEA(101));   // app icon (src/sim.rc)
     RegisterClassA(&wc);
 
     int wx = CW_USEDEFAULT, wy = CW_USEDEFAULT, ww = 960, wh = 720, sx, sy, sw, sh;
