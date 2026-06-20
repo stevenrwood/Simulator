@@ -85,14 +85,16 @@ bool sim_view_active (void)
     return running != 0;
 }
 
-// Window title (from the setup "description", e.g. "Mega V XL"). Stored even before the window exists so
-// gl_create() can apply it; updated live when edited in the Settings dialog.
-static char view_title[96] = "grblHAL_sim - 3D machine view";
+// Window title (from the setup "description", e.g. "Mega V XL") plus the build timestamp, so it is obvious
+// at a glance which build is running. Stored even before the window exists so gl_create() can apply it;
+// updated live when edited in the Settings dialog.
+#define SIM_BUILD_STAMP "built " __DATE__ " " __TIME__
+static char view_title[140] = "grblHAL_sim  -  " SIM_BUILD_STAMP;
 
 void sim_view_set_title (const char *s)
 {
     if(s && *s)
-        snprintf(view_title, sizeof(view_title), "%s", s);
+        snprintf(view_title, sizeof(view_title), "%s  -  %s", s, SIM_BUILD_STAMP);
     if(hwnd)
         SetWindowTextA(hwnd, view_title);
 }
@@ -458,31 +460,30 @@ static void render (void)
     heightmap_advance(t[0], t[1], t[2], cd, cs, cv);
     int have_stock = hmap != NULL && hm_nx > 0;
 
-    // Carve status: surface why the stock is / isn't being removed. Emitted to the action log (Show Log)
-    // only when the verdict changes, so it pinpoints the cause (e.g. "tool XY not over stock") without spam.
-    {
-        int verdict;
-        if(!have_stock)        verdict = 0;    // no stock heightmap
-        else if(cd <= 0.0f)    verdict = 1;    // no cutter geometry
-        else {
-            float xR = hm_x0 + hm_nx * hm_cell, yT = hm_y0 + hm_ny * hm_cell;
-            int over = t[0] >= hm_x0 && t[0] <= xR && t[1] >= hm_y0 && t[1] <= yT;
-            verdict = !over ? 2 : (t[2] >= hm_top ? 3 : 4);   // off-stock / above / cutting
-        }
-        static int last_verdict = -1;
-        if(verdict != last_verdict) {
-            last_verdict = verdict;
-            const char *msg[] = { "no stock defined (need a -setup fixture)",
-                                  "no cutter geometry - add a (TOOL T=n D=.. TYPE=..) comment",
-                                  "tool is not over the stock - check the job's G54 work offset",
-                                  "tool above the stock top (air move) - no cut yet",
-                                  "cutting - removing stock" };
-            char line[200];
-            snprintf(line, sizeof line, "carve: %s  [tool=(%.1f,%.1f,%.1f) dia=%.2f cells=%ld]",
-                     msg[verdict], t[0], t[1], t[2], cd, carve_count);
-            fprintf(stderr, "%s\n", line);
-            sim_view_log_append(line);
-        }
+    // Carve status: surface why the stock is / isn't being removed. Shown persistently in the overlay
+    // (below) and also logged to the action log (Show Log) on change, so the cause is never a mystery.
+    int verdict;
+    if(!have_stock)        verdict = 0;    // no stock heightmap
+    else if(cd <= 0.0f)    verdict = 1;    // no cutter geometry
+    else {
+        float xR = hm_x0 + hm_nx * hm_cell, yT = hm_y0 + hm_ny * hm_cell;
+        int over = t[0] >= hm_x0 && t[0] <= xR && t[1] >= hm_y0 && t[1] <= yT;
+        verdict = !over ? 2 : (t[2] >= hm_top ? 3 : 4);   // off-stock / above / cutting
+    }
+    static const char *verdict_msg[] = {
+        "no stock defined (need a -setup fixture)",
+        "no cutter geometry - add a (TOOL T=n D=.. TYPE=..) comment",
+        "tool is not over the stock - check the job's G54 work offset",
+        "tool above the stock top (air move) - no cut yet",
+        "cutting - removing stock" };
+    static int last_verdict = -1;
+    if(verdict != last_verdict) {                          // log only on change (no spam)
+        last_verdict = verdict;
+        char line[200];
+        snprintf(line, sizeof line, "carve: %s  [tool=(%.1f,%.1f,%.1f) dia=%.2f cells=%ld]",
+                 verdict_msg[verdict], t[0], t[1], t[2], cd, carve_count);
+        fprintf(stderr, "%s\n", line);
+        sim_view_log_append(line);
     }
 
     frame_camera(&g);
@@ -560,6 +561,12 @@ static void render (void)
         glColor3f(0.05f, 0.22f, 0.55f);
         text2d(10, 8, msg);
     }
+
+    // Carve status, top-left: green while cutting, red when it can't (with the reason).
+    if(verdict == 4) glColor3f(0.0f, 0.45f, 0.0f); else glColor3f(0.70f, 0.10f, 0.10f);
+    char cl[96];
+    snprintf(cl, sizeof cl, "carve: %s", verdict_msg[verdict]);
+    text2d(10, h - char_h - 6, cl);
 
     glMatrixMode(GL_PROJECTION); glPopMatrix();
     glMatrixMode(GL_MODELVIEW);  glPopMatrix();
@@ -860,6 +867,7 @@ static DWORD WINAPI view_thread (LPVOID arg)
         return 0;
     }
     fprintf(stderr, "view: 3D machine view opened\n");
+    sim_view_log_append("grblHAL_sim 3D view  -  " SIM_BUILD_STAMP);   // first Show Log line = build version
     quad = gluNewQuadric();
     gluQuadricNormals(quad, GLU_SMOOTH);
 
