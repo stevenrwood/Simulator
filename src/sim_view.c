@@ -27,6 +27,8 @@
 #define ID_FORMAT   1002
 #define ID_SHOWLOG  1003
 #define ID_RESETSTOCK 1004
+#define ID_FLIPX    1005
+#define ID_FLIPY    1006
 
 extern void sim_request_format_reboot (void);   // main.c
 
@@ -372,8 +374,47 @@ static void frame_camera (const sim_view_geometry_t *g)
     framed = 1;
 }
 
+// Colour the stock surface by how deeply it has been cut: tan where uncut, darkening toward near-black at
+// the full cut depth - so removed material reads clearly and the depth of each pocket is visible.
+static void stock_color (float h)
+{
+    if(h >= hm_top - 0.02f)
+        glColor3f(0.82f, 0.68f, 0.42f);                 // uncut stock (tan)
+    else {
+        float span = hm_top - hm_bot;
+        float frac = span > 0.0f ? (hm_top - h) / span : 1.0f;   // 0 just-cut .. 1 full depth
+        if(frac > 1.0f) frac = 1.0f;
+        float s = 1.0f - frac;                          // 1 shallow .. 0 deep
+        glColor3f(0.10f + 0.28f * s, 0.10f + 0.25f * s, 0.12f + 0.22f * s);   // dark, darker with depth
+    }
+}
+
+// Flip the carved stock about an axis (for double-sided machining: cut one side, flip, cut the other).
+// mirror_x mirrors the columns (turning the stock over about the Y axis - left/right); otherwise mirrors
+// the rows (about the X axis - front/back). Render thread (called from the menu handler, same thread).
+static void flip_stock (int mirror_x)
+{
+    if(hmap == NULL || hm_nx == 0)
+        return;
+    if(mirror_x) {
+        for(int iy = 0; iy < hm_ny; iy++)
+            for(int ix = 0; ix < hm_nx / 2; ix++) {
+                int a = iy * hm_nx + ix, b = iy * hm_nx + (hm_nx - 1 - ix);
+                float t = hmap[a]; hmap[a] = hmap[b]; hmap[b] = t;
+            }
+    } else {
+        for(int iy = 0; iy < hm_ny / 2; iy++)
+            for(int ix = 0; ix < hm_nx; ix++) {
+                int a = iy * hm_nx + ix, b = (hm_ny - 1 - iy) * hm_nx + ix;
+                float t = hmap[a]; hmap[a] = hmap[b]; hmap[b] = t;
+            }
+    }
+    carve_have_last = 0;                                 // don't carve a phantom path across the flip
+}
+
 // Draw the carved stock from the render-owned heightmap copy: a flat top quad per cell, vertical walls
-// where neighbouring cells differ (pocket walls), and an outer skirt down to the stock bottom.
+// where neighbouring cells differ (pocket walls), and an outer skirt down to the stock bottom. Carved
+// areas are shaded dark by depth (see stock_color) so material removal is obvious.
 static void draw_heightmap (void)
 {
     if(hmap == NULL || hm_nx == 0)
@@ -387,6 +428,7 @@ static void draw_heightmap (void)
         float y0 = hm_y0 + iy * c, y1 = y0 + c;
         for(int ix = 0; ix < hm_nx; ix++) {
             float x0 = hm_x0 + ix * c, x1 = x0 + c, h = hmap[iy * hm_nx + ix];
+            stock_color(h);
             glVertex3f(x0, y0, h); glVertex3f(x1, y0, h); glVertex3f(x1, y1, h); glVertex3f(x0, y1, h);
         }
     }
@@ -399,12 +441,12 @@ static void draw_heightmap (void)
             float x1 = hm_x0 + (ix + 1) * c, h = hmap[iy * hm_nx + ix];
             if(ix + 1 < hm_nx) {
                 float hn = hmap[iy * hm_nx + ix + 1];
-                if(hn != h) { glNormal3f(1, 0, 0);
+                if(hn != h) { glNormal3f(1, 0, 0); stock_color(fminf(h, hn));
                     glVertex3f(x1, y0, h); glVertex3f(x1, y1, h); glVertex3f(x1, y1, hn); glVertex3f(x1, y0, hn); }
             }
             if(iy + 1 < hm_ny) {
                 float hn = hmap[(iy + 1) * hm_nx + ix], x0 = hm_x0 + ix * c;
-                if(hn != h) { glNormal3f(0, 1, 0);
+                if(hn != h) { glNormal3f(0, 1, 0); stock_color(fminf(h, hn));
                     glVertex3f(x0, y1, h); glVertex3f(x1, y1, h); glVertex3f(x1, y1, hn); glVertex3f(x0, y1, hn); }
             }
         }
@@ -415,17 +457,17 @@ static void draw_heightmap (void)
     for(int ix = 0; ix < hm_nx; ix++) {
         float x0 = hm_x0 + ix * c, x1 = x0 + c;
         float hB = hmap[ix], hT = hmap[(hm_ny - 1) * hm_nx + ix];
-        glNormal3f(0, -1, 0);
+        glNormal3f(0, -1, 0); stock_color(hB);
         glVertex3f(x0, hm_y0, hm_bot); glVertex3f(x1, hm_y0, hm_bot); glVertex3f(x1, hm_y0, hB); glVertex3f(x0, hm_y0, hB);
-        glNormal3f(0, 1, 0);
+        glNormal3f(0, 1, 0); stock_color(hT);
         glVertex3f(x0, yT, hT); glVertex3f(x1, yT, hT); glVertex3f(x1, yT, hm_bot); glVertex3f(x0, yT, hm_bot);
     }
     for(int iy = 0; iy < hm_ny; iy++) {
         float y0 = hm_y0 + iy * c, y1 = y0 + c;
         float hL = hmap[iy * hm_nx], hR = hmap[iy * hm_nx + (hm_nx - 1)];
-        glNormal3f(-1, 0, 0);
+        glNormal3f(-1, 0, 0); stock_color(hL);
         glVertex3f(hm_x0, y0, hL); glVertex3f(hm_x0, y1, hL); glVertex3f(hm_x0, y1, hm_bot); glVertex3f(hm_x0, y0, hm_bot);
-        glNormal3f(1, 0, 0);
+        glNormal3f(1, 0, 0); stock_color(hR);
         glVertex3f(xR, y0, hm_bot); glVertex3f(xR, y1, hm_bot); glVertex3f(xR, y1, hR); glVertex3f(xR, y0, hR);
     }
     glEnd();
@@ -782,6 +824,12 @@ static LRESULT CALLBACK wndproc (HWND h, UINT msg, WPARAM wp, LPARAM lp)
                 case ID_RESETSTOCK:
                     sim_view_reset_stock();             // restore an uncut block (e.g. before a re-run)
                     return 0;
+                case ID_FLIPX:
+                    flip_stock(0);                      // flip about X (front/back) for the second side
+                    return 0;
+                case ID_FLIPY:
+                    flip_stock(1);                      // flip about Y (left/right)
+                    return 0;
             }
             return 0;
         case WM_LBUTTONUP:
@@ -825,6 +873,8 @@ static int gl_create (void)
     hmenu = CreateMenu();
     AppendMenuA(hmenu, MF_STRING, ID_SETTINGS,    "Settings");
     AppendMenuA(hmenu, MF_STRING, ID_RESETSTOCK,  "Reset Stock");
+    AppendMenuA(hmenu, MF_STRING, ID_FLIPX,       "Flip Stock on X");
+    AppendMenuA(hmenu, MF_STRING, ID_FLIPY,       "Flip Stock on Y");
     AppendMenuA(hmenu, MF_STRING, ID_FORMAT,      "Format");
     AppendMenuA(hmenu, MF_STRING, ID_SHOWLOG,     "Show Log");
     SetMenu(hwnd, hmenu);
