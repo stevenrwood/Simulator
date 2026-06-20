@@ -76,6 +76,7 @@ static float  cut_dia = 0.0f, cut_vangle = 0.0f;         // active cutter geomet
 static int    cut_shape = SIM_TOOL_FLAT;
 static float  carve_lx, carve_ly, carve_lz;              // render thread's carve cursor (last carved tip)
 static int    carve_have_last = 0;
+static long   carve_count = 0;                           // cells lowered (diagnostic)
 
 // ---- data feed (called from the grbl/realtime threads) -------------------------------------------
 
@@ -191,8 +192,10 @@ static void carve_at (float x, float y, float z, float r, int shape, float tanha
                 th = z + sqrtf(d2) / tanhalf;            // V-bit cone
             if(th < hm_bot) th = hm_bot;                 // never cut below the spoilboard
             int idx = iy * hm_nx + ix;
-            if(th < hmap[idx])
+            if(th < hmap[idx]) {
                 hmap[idx] = th;
+                carve_count++;
+            }
         }
     }
 }
@@ -454,6 +457,33 @@ static void render (void)
     }
     heightmap_advance(t[0], t[1], t[2], cd, cs, cv);
     int have_stock = hmap != NULL && hm_nx > 0;
+
+    // Carve status: surface why the stock is / isn't being removed. Emitted to the action log (Show Log)
+    // only when the verdict changes, so it pinpoints the cause (e.g. "tool XY not over stock") without spam.
+    {
+        int verdict;
+        if(!have_stock)        verdict = 0;    // no stock heightmap
+        else if(cd <= 0.0f)    verdict = 1;    // no cutter geometry
+        else {
+            float xR = hm_x0 + hm_nx * hm_cell, yT = hm_y0 + hm_ny * hm_cell;
+            int over = t[0] >= hm_x0 && t[0] <= xR && t[1] >= hm_y0 && t[1] <= yT;
+            verdict = !over ? 2 : (t[2] >= hm_top ? 3 : 4);   // off-stock / above / cutting
+        }
+        static int last_verdict = -1;
+        if(verdict != last_verdict) {
+            last_verdict = verdict;
+            const char *msg[] = { "no stock defined (need a -setup fixture)",
+                                  "no cutter geometry - add a (TOOL T=n D=.. TYPE=..) comment",
+                                  "tool is not over the stock - check the job's G54 work offset",
+                                  "tool above the stock top (air move) - no cut yet",
+                                  "cutting - removing stock" };
+            char line[200];
+            snprintf(line, sizeof line, "carve: %s  [tool=(%.1f,%.1f,%.1f) dia=%.2f cells=%ld]",
+                     msg[verdict], t[0], t[1], t[2], cd, carve_count);
+            fprintf(stderr, "%s\n", line);
+            sim_view_log_append(line);
+        }
+    }
 
     frame_camera(&g);
 
