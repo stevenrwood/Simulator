@@ -759,10 +759,53 @@ static void log_refresh (void)
     SendMessageA(log_edit, EM_SCROLLCARET, 0, 0);
 }
 
+// ---- window placement persistence (HKCU\Software\grblHALSim) --------------------------------------
+
+#define SIM_REG_KEY "Software\\grblHALSim"
+
+// Save a window's screen rectangle (x,y,w,h as 4 DWORDs) so it reopens where the user left it.
+static void save_window_pos (const char *name, HWND h)
+{
+    RECT r;
+    if(!h || IsIconic(h) || IsZoomed(h) || !GetWindowRect(h, &r))   // skip minimised/maximised
+        return;
+    HKEY k;
+    if(RegCreateKeyExA(HKEY_CURRENT_USER, SIM_REG_KEY, 0, NULL, 0, KEY_WRITE, NULL, &k, NULL) == ERROR_SUCCESS) {
+        DWORD v[4] = { (DWORD)r.left, (DWORD)r.top, (DWORD)(r.right - r.left), (DWORD)(r.bottom - r.top) };
+        RegSetValueExA(k, name, 0, REG_BINARY, (const BYTE *)v, sizeof v);
+        RegCloseKey(k);
+    }
+}
+
+// Load a saved window rectangle; returns 0 (caller uses defaults) unless a sane, on-screen rect is found.
+static int load_window_pos (const char *name, int *x, int *y, int *w, int *h)
+{
+    HKEY k;
+    DWORD v[4], sz = sizeof v, type = 0;
+    int ok = 0;
+    if(RegOpenKeyExA(HKEY_CURRENT_USER, SIM_REG_KEY, 0, KEY_READ, &k) == ERROR_SUCCESS) {
+        if(RegQueryValueExA(k, name, NULL, &type, (BYTE *)v, &sz) == ERROR_SUCCESS && sz == sizeof v && type == REG_BINARY)
+            ok = 1;
+        RegCloseKey(k);
+    }
+    if(!ok)
+        return 0;
+    *x = (int)v[0]; *y = (int)v[1]; *w = (int)v[2]; *h = (int)v[3];
+    if(*w < 200 || *h < 150 || *w > 10000 || *h > 10000)            // sanity
+        return 0;
+    // Reject a rect whose title bar is entirely off the virtual desktop (e.g. a monitor was removed).
+    int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if(*x + *w < vx + 40 || *x > vx + vw - 40 || *y < vy - 4 || *y > vy + vh - 30)
+        return 0;
+    return 1;
+}
+
 static LRESULT CALLBACK logproc (HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
     if(msg == WM_SIZE) { if(log_edit) MoveWindow(log_edit, 0, 0, LOWORD(lp), HIWORD(lp), TRUE); return 0; }
-    if(msg == WM_CLOSE) { ShowWindow(h, SW_HIDE); return 0; }   // hide (keep it for next time)
+    if(msg == WM_EXITSIZEMOVE) { save_window_pos("LogWindow", h); return 0; }    // moved/resized
+    if(msg == WM_CLOSE) { save_window_pos("LogWindow", h); ShowWindow(h, SW_HIDE); return 0; }   // hide, keep
     return DefWindowProc(h, msg, wp, lp);
 }
 
@@ -777,8 +820,10 @@ static void log_window_show (void)
         wc.hCursor = LoadCursor(NULL, IDC_ARROW);
         wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
         RegisterClassA(&wc);
+        int lx = CW_USEDEFAULT, ly = CW_USEDEFAULT, lw = 760, lh = 480, sx, sy, sw, sh;
+        if(load_window_pos("LogWindow", &sx, &sy, &sw, &sh)) { lx = sx; ly = sy; lw = sw; lh = sh; }
         log_hwnd = CreateWindowA("grblHALSimLog", "grblHAL_sim - action log", WS_OVERLAPPEDWINDOW,
-                                 CW_USEDEFAULT, CW_USEDEFAULT, 760, 480, NULL, NULL, wc.hInstance, NULL);
+                                 lx, ly, lw, lh, NULL, NULL, wc.hInstance, NULL);
         log_edit = CreateWindowA("EDIT", "",
                                  WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
                                  0, 0, 760, 480, log_hwnd, NULL, GetModuleHandle(NULL), NULL);
@@ -796,10 +841,14 @@ static void log_window_show (void)
 static LRESULT CALLBACK wndproc (HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch(msg) {
+        case WM_EXITSIZEMOVE:
+            save_window_pos("MainWindow", h);           // remember where the user put / sized it
+            return 0;
         case WM_CLOSE:
             // The 3D window is the standalone sim's UI - closing it shuts the simulator down so the socket
             // drops and the connected sender (ioSender) sees the controller go away. exit() runs the atexit
             // hooks (e.g. the EEPROM save). running=0 first lets the render thread unwind cleanly.
+            save_window_pos("MainWindow", h);
             running = 0;
             exit(0);
             return 0;
@@ -863,9 +912,10 @@ static int gl_create (void)
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     RegisterClassA(&wc);
 
+    int wx = CW_USEDEFAULT, wy = CW_USEDEFAULT, ww = 960, wh = 720, sx, sy, sw, sh;
+    if(load_window_pos("MainWindow", &sx, &sy, &sw, &sh)) { wx = sx; wy = sy; ww = sw; wh = sh; }
     hwnd = CreateWindowA("grblHALSimView", view_title,
-                         WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
-                         960, 720, NULL, NULL, wc.hInstance, NULL);
+                         WS_OVERLAPPEDWINDOW | WS_VISIBLE, wx, wy, ww, wh, NULL, NULL, wc.hInstance, NULL);
     if(!hwnd)
         return 0;
 
