@@ -298,9 +298,9 @@ static void sim_push_tool_geometry (void)
 {
     if(sim_active_tool >= 0 && sim_active_tool <= SIM_MAX_TOOL && sim_tools[sim_active_tool].defined) {
         sim_tool_t *t = &sim_tools[sim_active_tool];
-        sim_view_set_tool_geometry(t->diameter, t->shape, t->vangle);
+        sim_view_set_tool_geometry(t->diameter, t->shape, t->vangle, sim_active_tool);
     } else
-        sim_view_set_tool_geometry(0.0f, SIM_TOOL_FLAT, 0.0f);   // unknown tool -> no carving
+        sim_view_set_tool_geometry(0.0f, SIM_TOOL_FLAT, 0.0f, sim_active_tool);   // unknown tool -> no carving
 }
 
 // Geometry parsed from a tool comment with no T= (an end-of-line comment on the M6 line); it is applied

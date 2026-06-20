@@ -35,8 +35,9 @@ void sim_view_set_tool (float x, float y, float z);
 // Cutter shape for the material-removal carve.
 typedef enum { SIM_TOOL_FLAT = 0, SIM_TOOL_BALL = 1, SIM_TOOL_VBIT = 2 } sim_tool_shape_t;
 
-// Publish the active cutter geometry (diameter mm, shape, V-bit included angle deg) used to carve the stock.
-void sim_view_set_tool_geometry (float diameter, int shape, float vangle);
+// Publish the active cutter geometry (diameter mm, shape, V-bit included angle deg, tool number) used to
+// carve the stock. tool is the active T number (or -1 if none / unknown), shown in the carve status.
+void sim_view_set_tool_geometry (float diameter, int shape, float vangle, int tool);
 
 // Reset the stock heightmap back to an uncut block (e.g. before re-running a job).
 void sim_view_reset_stock (void);

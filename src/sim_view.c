@@ -70,15 +70,22 @@ static volatile int logdirty = 0;
 // frame. This keeps all carving cost off the realtime loop (which must stay responsive to keep the planner
 // fed) and means the heightmap itself never needs locking.
 static float *hmap = NULL;                               // heightmap (render thread only)
+static unsigned char *hmap_tool = NULL;                 // per-cell cutter shape that last cut it (for colour)
 static int    hm_nx = 0, hm_ny = 0;
 static float  hm_x0, hm_y0, hm_cell, hm_top, hm_bot;
 static int    geom_dirty = 0;                            // set by set_geometry (grbl), consumed by render
 static int    stock_reset = 0;                           // set by reset_stock, consumed by render
 static float  cut_dia = 0.0f, cut_vangle = 0.0f;         // active cutter geometry (published under lock)
-static int    cut_shape = SIM_TOOL_FLAT;
+static int    cut_shape = SIM_TOOL_FLAT, cut_tool = -1;
 static float  carve_lx, carve_ly, carve_lz;              // render thread's carve cursor (last carved tip)
 static int    carve_have_last = 0;
 static long   carve_count = 0;                           // cells lowered (diagnostic)
+
+// Render the stock through a GL display list rebuilt only when the heightmap changes, so a fine grid stays
+// cheap: the geometry is compiled once (GPU-resident) and camera moves just replay it with glCallList;
+// carving recompiles it, throttled to a few times/second.
+static GLuint stock_list = 0;
+static int    hm_render_dirty = 1, hm_render_frames = 999;
 
 // ---- data feed (called from the grbl/realtime threads) -------------------------------------------
 
@@ -122,12 +129,12 @@ void sim_view_reset_stock (void)
     LeaveCriticalSection(&lock);
 }
 
-void sim_view_set_tool_geometry (float diameter, int shape, float vangle)
+void sim_view_set_tool_geometry (float diameter, int shape, float vangle, int tool)
 {
     if(!running)
         return;
     EnterCriticalSection(&lock);
-    cut_dia = diameter; cut_shape = shape; cut_vangle = vangle;
+    cut_dia = diameter; cut_shape = shape; cut_vangle = vangle; cut_tool = tool;
     LeaveCriticalSection(&lock);
 }
 
@@ -152,14 +159,15 @@ static void heightmap_alloc (const sim_view_geometry_t *g)
         free(hmap); hmap = NULL; hm_nx = hm_ny = 0;
         return;
     }
-    const int MAXCELLS = 160;
-    float cell = fmaxf(0.5f, fmaxf(spanx, spany) / MAXCELLS);
+    const int MAXCELLS = 400;                           // finer grid; the vertex-array renderer keeps it cheap
+    float cell = fmaxf(0.4f, fmaxf(spanx, spany) / MAXCELLS);
     int nx = (int)ceilf(spanx / cell), ny = (int)ceilf(spany / cell);
     if(nx < 1) nx = 1; if(ny < 1) ny = 1;
 
-    if(nx != hm_nx || ny != hm_ny) {                    // (re)size the buffer
-        free(hmap);
+    if(nx != hm_nx || ny != hm_ny) {                    // (re)size the buffers
+        free(hmap); free(hmap_tool);
         hmap = (float *)malloc((size_t)nx * ny * sizeof(float));
+        hmap_tool = (unsigned char *)malloc((size_t)nx * ny);
     }
     hm_nx = nx; hm_ny = ny;
     hm_x0 = g->stock_min[0]; hm_y0 = g->stock_min[1];
@@ -169,6 +177,9 @@ static void heightmap_alloc (const sim_view_geometry_t *g)
     if(hmap)
         for(int i = 0; i < nx * ny; i++)
             hmap[i] = hm_top;
+    if(hmap_tool)
+        memset(hmap_tool, 0, (size_t)nx * ny);
+    hm_render_dirty = 1;
 }
 
 // Lower the heightmap cells the cutter (centred at x,y, tip at z; radius r) currently overlaps.
@@ -198,7 +209,9 @@ static void carve_at (float x, float y, float z, float r, int shape, float tanha
             int idx = iy * hm_nx + ix;
             if(th < hmap[idx]) {
                 hmap[idx] = th;
+                if(hmap_tool) hmap_tool[idx] = (unsigned char)shape;   // colour by which cutter removed it
                 carve_count++;
+                hm_render_dirty = 1;
             }
         }
     }
@@ -374,19 +387,35 @@ static void frame_camera (const sim_view_geometry_t *g)
     framed = 1;
 }
 
-// Colour the stock surface by how deeply it has been cut: tan where uncut, darkening toward near-black at
-// the full cut depth - so removed material reads clearly and the depth of each pocket is visible.
-static void stock_color (float h)
+// Colour a stock cell: tan where uncut; otherwise by which cutter removed it (flat/rough = grey, ball/fine
+// = blue, V-bit = green), darkening toward near-black at the full cut depth so depth stays readable.
+static void stock_color_rgb (float h, int shape, float *rgb)
 {
-    if(h >= hm_top - 0.02f)
-        glColor3f(0.82f, 0.68f, 0.42f);                 // uncut stock (tan)
-    else {
-        float span = hm_top - hm_bot;
-        float frac = span > 0.0f ? (hm_top - h) / span : 1.0f;   // 0 just-cut .. 1 full depth
-        if(frac > 1.0f) frac = 1.0f;
-        float s = 1.0f - frac;                          // 1 shallow .. 0 deep
-        glColor3f(0.10f + 0.28f * s, 0.10f + 0.25f * s, 0.12f + 0.22f * s);   // dark, darker with depth
+    if(h >= hm_top - 0.02f) {
+        rgb[0] = 0.82f; rgb[1] = 0.68f; rgb[2] = 0.42f;            // uncut stock (tan)
+        return;
     }
+    float span = hm_top - hm_bot;
+    float frac = span > 0.0f ? (hm_top - h) / span : 1.0f;        // 0 just-cut .. 1 full depth
+    if(frac > 1.0f) frac = 1.0f;
+    float s = 1.0f - frac;                                        // 1 shallow .. 0 deep
+    if(shape == SIM_TOOL_BALL) {                                  // ball / finish cut - blue
+        rgb[0] = 0.08f + 0.18f * s; rgb[1] = 0.16f + 0.30f * s; rgb[2] = 0.26f + 0.42f * s;
+    } else if(shape == SIM_TOOL_VBIT) {                           // V-bit - green
+        rgb[0] = 0.08f + 0.18f * s; rgb[1] = 0.18f + 0.34f * s; rgb[2] = 0.10f + 0.18f * s;
+    } else {                                                      // flat / rough cut - grey toward black
+        rgb[0] = 0.10f + 0.28f * s; rgb[1] = 0.10f + 0.25f * s; rgb[2] = 0.12f + 0.22f * s;
+    }
+}
+
+// Emit one flat-shaded quad (colour + normal + 4 verts). Must be called inside a glBegin(GL_QUADS).
+static void gl_quad (float ax, float ay, float az, float bx, float by, float bz,
+                     float cx, float cy, float cz, float dx, float dy, float dz,
+                     float nx, float ny, float nz, const float *rgb)
+{
+    glColor3fv(rgb);
+    glNormal3f(nx, ny, nz);
+    glVertex3f(ax, ay, az); glVertex3f(bx, by, bz); glVertex3f(cx, cy, cz); glVertex3f(dx, dy, dz);
 }
 
 // Flip the carved stock about an axis (for double-sided machining: cut one side, flip, cut the other).
@@ -401,87 +430,103 @@ static void flip_stock (int mirror_x)
             for(int ix = 0; ix < hm_nx / 2; ix++) {
                 int a = iy * hm_nx + ix, b = iy * hm_nx + (hm_nx - 1 - ix);
                 float t = hmap[a]; hmap[a] = hmap[b]; hmap[b] = t;
+                if(hmap_tool) { unsigned char u = hmap_tool[a]; hmap_tool[a] = hmap_tool[b]; hmap_tool[b] = u; }
             }
     } else {
         for(int iy = 0; iy < hm_ny / 2; iy++)
             for(int ix = 0; ix < hm_nx; ix++) {
                 int a = iy * hm_nx + ix, b = (hm_ny - 1 - iy) * hm_nx + ix;
                 float t = hmap[a]; hmap[a] = hmap[b]; hmap[b] = t;
+                if(hmap_tool) { unsigned char u = hmap_tool[a]; hmap_tool[a] = hmap_tool[b]; hmap_tool[b] = u; }
             }
     }
     carve_have_last = 0;                                 // don't carve a phantom path across the flip
+    hm_render_dirty = 1;
 }
 
-// Draw the carved stock from the render-owned heightmap copy: a flat top quad per cell, vertical walls
-// where neighbouring cells differ (pocket walls), and an outer skirt down to the stock bottom. Carved
-// areas are shaded dark by depth (see stock_color) so material removal is obvious.
+// Compile the carved stock into the display list: a flat top quad per cell, vertical walls where
+// neighbouring cells differ (pocket walls), and an outer skirt down to the stock bottom. Carved areas are
+// coloured by cutter + depth (stock_color_rgb). Called only when the heightmap changed (and throttled).
+static void compile_stock_list (void)
+{
+    float c = hm_cell, xR = hm_x0 + hm_nx * c, yT = hm_y0 + hm_ny * c, col[3];
+    #define TSHAPE(i) (hmap_tool ? (int)hmap_tool[i] : SIM_TOOL_FLAT)
+
+    glNewList(stock_list, GL_COMPILE);
+    glBegin(GL_QUADS);
+
+    for(int iy = 0; iy < hm_ny; iy++) {                  // top surface
+        float y0 = hm_y0 + iy * c, y1 = y0 + c;
+        for(int ix = 0; ix < hm_nx; ix++) {
+            int idx = iy * hm_nx + ix;
+            float x0 = hm_x0 + ix * c, x1 = x0 + c, h = hmap[idx];
+            stock_color_rgb(h, TSHAPE(idx), col);
+            gl_quad(x0, y0, h, x1, y0, h, x1, y1, h, x0, y1, h, 0, 0, 1, col);
+        }
+    }
+    for(int iy = 0; iy < hm_ny; iy++) {                  // interior pocket walls (colour from the lower cell)
+        float y0 = hm_y0 + iy * c, y1 = y0 + c;
+        for(int ix = 0; ix < hm_nx; ix++) {
+            int idx = iy * hm_nx + ix;
+            float x0 = hm_x0 + ix * c, x1 = x0 + c, h = hmap[idx];
+            if(ix + 1 < hm_nx) {
+                float hn = hmap[idx + 1];
+                if(hn != h) { stock_color_rgb(fminf(h, hn), TSHAPE(h < hn ? idx : idx + 1), col);
+                    gl_quad(x1, y0, h, x1, y1, h, x1, y1, hn, x1, y0, hn, 1, 0, 0, col); }
+            }
+            if(iy + 1 < hm_ny) {
+                float hn = hmap[idx + hm_nx];
+                if(hn != h) { stock_color_rgb(fminf(h, hn), TSHAPE(h < hn ? idx : idx + hm_nx), col);
+                    gl_quad(x0, y1, h, x1, y1, h, x1, y1, hn, x0, y1, hn, 0, 1, 0, col); }
+            }
+        }
+    }
+    for(int ix = 0; ix < hm_nx; ix++) {                  // outer skirt down to the spoilboard
+        float x0 = hm_x0 + ix * c, x1 = x0 + c;
+        int bi = ix, ti = (hm_ny - 1) * hm_nx + ix;
+        float hB = hmap[bi], hT = hmap[ti];
+        stock_color_rgb(hB, TSHAPE(bi), col); gl_quad(x0, hm_y0, hm_bot, x1, hm_y0, hm_bot, x1, hm_y0, hB, x0, hm_y0, hB, 0, -1, 0, col);
+        stock_color_rgb(hT, TSHAPE(ti), col); gl_quad(x0, yT, hT, x1, yT, hT, x1, yT, hm_bot, x0, yT, hm_bot, 0, 1, 0, col);
+    }
+    for(int iy = 0; iy < hm_ny; iy++) {
+        float y0 = hm_y0 + iy * c, y1 = y0 + c;
+        int li = iy * hm_nx, ri = iy * hm_nx + (hm_nx - 1);
+        float hL = hmap[li], hR = hmap[ri];
+        stock_color_rgb(hL, TSHAPE(li), col); gl_quad(hm_x0, y0, hL, hm_x0, y1, hL, hm_x0, y1, hm_bot, hm_x0, y0, hm_bot, -1, 0, 0, col);
+        stock_color_rgb(hR, TSHAPE(ri), col); gl_quad(xR, y0, hm_bot, xR, y1, hm_bot, xR, y1, hR, xR, y0, hR, 1, 0, 0, col);
+    }
+    #undef TSHAPE
+
+    glEnd();
+    glEndList();
+}
+
+// Draw the carved stock. The display list is recompiled only when the heightmap changed, at most a few
+// times per second; camera moves just replay it with glCallList, so a fine grid stays cheap.
 static void draw_heightmap (void)
 {
     if(hmap == NULL || hm_nx == 0)
         return;
-    float c = hm_cell;
-    float xR = hm_x0 + hm_nx * c, yT = hm_y0 + hm_ny * c;
-
-    glNormal3f(0.0f, 0.0f, 1.0f);                        // top surface
-    glBegin(GL_QUADS);
-    for(int iy = 0; iy < hm_ny; iy++) {
-        float y0 = hm_y0 + iy * c, y1 = y0 + c;
-        for(int ix = 0; ix < hm_nx; ix++) {
-            float x0 = hm_x0 + ix * c, x1 = x0 + c, h = hmap[iy * hm_nx + ix];
-            stock_color(h);
-            glVertex3f(x0, y0, h); glVertex3f(x1, y0, h); glVertex3f(x1, y1, h); glVertex3f(x0, y1, h);
-        }
+    if(stock_list == 0)
+        stock_list = glGenLists(1);
+    if(stock_list && hm_render_dirty && ++hm_render_frames >= 3) {  // throttle (~20/s); carving stays full-rate
+        compile_stock_list();
+        hm_render_dirty = 0;
+        hm_render_frames = 0;
     }
-    glEnd();
-
-    glBegin(GL_QUADS);                                   // interior pocket walls
-    for(int iy = 0; iy < hm_ny; iy++) {
-        float y0 = hm_y0 + iy * c, y1 = y0 + c;
-        for(int ix = 0; ix < hm_nx; ix++) {
-            float x1 = hm_x0 + (ix + 1) * c, h = hmap[iy * hm_nx + ix];
-            if(ix + 1 < hm_nx) {
-                float hn = hmap[iy * hm_nx + ix + 1];
-                if(hn != h) { glNormal3f(1, 0, 0); stock_color(fminf(h, hn));
-                    glVertex3f(x1, y0, h); glVertex3f(x1, y1, h); glVertex3f(x1, y1, hn); glVertex3f(x1, y0, hn); }
-            }
-            if(iy + 1 < hm_ny) {
-                float hn = hmap[(iy + 1) * hm_nx + ix], x0 = hm_x0 + ix * c;
-                if(hn != h) { glNormal3f(0, 1, 0); stock_color(fminf(h, hn));
-                    glVertex3f(x0, y1, h); glVertex3f(x1, y1, h); glVertex3f(x1, y1, hn); glVertex3f(x0, y1, hn); }
-            }
-        }
-    }
-    glEnd();
-
-    glBegin(GL_QUADS);                                   // outer skirt down to the spoilboard
-    for(int ix = 0; ix < hm_nx; ix++) {
-        float x0 = hm_x0 + ix * c, x1 = x0 + c;
-        float hB = hmap[ix], hT = hmap[(hm_ny - 1) * hm_nx + ix];
-        glNormal3f(0, -1, 0); stock_color(hB);
-        glVertex3f(x0, hm_y0, hm_bot); glVertex3f(x1, hm_y0, hm_bot); glVertex3f(x1, hm_y0, hB); glVertex3f(x0, hm_y0, hB);
-        glNormal3f(0, 1, 0); stock_color(hT);
-        glVertex3f(x0, yT, hT); glVertex3f(x1, yT, hT); glVertex3f(x1, yT, hm_bot); glVertex3f(x0, yT, hm_bot);
-    }
-    for(int iy = 0; iy < hm_ny; iy++) {
-        float y0 = hm_y0 + iy * c, y1 = y0 + c;
-        float hL = hmap[iy * hm_nx], hR = hmap[iy * hm_nx + (hm_nx - 1)];
-        glNormal3f(-1, 0, 0); stock_color(hL);
-        glVertex3f(hm_x0, y0, hL); glVertex3f(hm_x0, y1, hL); glVertex3f(hm_x0, y1, hm_bot); glVertex3f(hm_x0, y0, hm_bot);
-        glNormal3f(1, 0, 0); stock_color(hR);
-        glVertex3f(xR, y0, hm_bot); glVertex3f(xR, y1, hm_bot); glVertex3f(xR, y1, hR); glVertex3f(xR, y0, hR);
-    }
-    glEnd();
+    if(stock_list)
+        glCallList(stock_list);
 }
 
 static void render (void)
 {
     sim_view_geometry_t g;
     float t[3], cd, cv;
-    int cs, gd, sr;
+    int cs, ct, gd, sr;
     char msg[160];
     EnterCriticalSection(&lock);                        // brief snapshot of the published state
     g = geom; t[0] = tool[0]; t[1] = tool[1]; t[2] = tool[2];
-    cd = cut_dia; cs = cut_shape; cv = cut_vangle;
+    cd = cut_dia; cs = cut_shape; cv = cut_vangle; ct = cut_tool;
     gd = geom_dirty; geom_dirty = 0;
     sr = stock_reset; stock_reset = 0;
     strncpy(msg, message, sizeof msg); msg[sizeof msg - 1] = '\0';
@@ -497,7 +542,9 @@ static void render (void)
     }
     if(sr && hmap) {
         for(int i = 0; i < hm_nx * hm_ny; i++) hmap[i] = hm_top;
+        if(hmap_tool) memset(hmap_tool, 0, (size_t)hm_nx * hm_ny);
         carve_have_last = 0;
+        hm_render_dirty = 1;
     }
     heightmap_advance(t[0], t[1], t[2], cd, cs, cv);
     int have_stock = hmap != NULL && hm_nx > 0;
@@ -518,12 +565,19 @@ static void render (void)
         "tool is not over the stock - check the job's G54 work offset",
         "tool above the stock top (air move) - no cut yet",
         "cutting - removing stock" };
+    const char *shape_name = cs == SIM_TOOL_BALL ? "BALL" : cs == SIM_TOOL_VBIT ? "VBIT" : "FLAT";
+    char tool_label[40];
+    if(cd > 0.0f && ct >= 0)
+        snprintf(tool_label, sizeof tool_label, "T%d %s D%.2f", ct, shape_name, cd);
+    else
+        snprintf(tool_label, sizeof tool_label, "no active tool");
+
     static int last_verdict = -1;
     if(verdict != last_verdict) {                          // log only on change (no spam)
         last_verdict = verdict;
-        char line[200];
-        snprintf(line, sizeof line, "carve: %s  [tool=(%.1f,%.1f,%.1f) dia=%.2f cells=%ld]",
-                 verdict_msg[verdict], t[0], t[1], t[2], cd, carve_count);
+        char line[220];
+        snprintf(line, sizeof line, "carve: %s  [%s  pos=(%.1f,%.1f,%.1f) cells=%ld]",
+                 verdict_msg[verdict], tool_label, t[0], t[1], t[2], carve_count);
         fprintf(stderr, "%s\n", line);
         sim_view_log_append(line);
     }
@@ -604,10 +658,10 @@ static void render (void)
         text2d(10, 8, msg);
     }
 
-    // Carve status, top-left: green while cutting, red when it can't (with the reason).
+    // Carve status, top-left: green while cutting, red when it can't (with the reason + active tool).
     if(verdict == 4) glColor3f(0.0f, 0.45f, 0.0f); else glColor3f(0.70f, 0.10f, 0.10f);
-    char cl[96];
-    snprintf(cl, sizeof cl, "carve: %s", verdict_msg[verdict]);
+    char cl[140];
+    snprintf(cl, sizeof cl, "carve: %s  [%s]", verdict_msg[verdict], tool_label);
     text2d(10, h - char_h - 6, cl);
 
     glMatrixMode(GL_PROJECTION); glPopMatrix();
@@ -1017,7 +1071,7 @@ void sim_view_set_geometry (const sim_view_geometry_t *g) { (void)g; }
 void sim_view_set_tool (float x, float y, float z) { (void)x; (void)y; (void)z; }
 void sim_view_set_message (const char *s) { (void)s; }
 void sim_view_log_append (const char *s) { (void)s; }
-void sim_view_set_tool_geometry (float diameter, int shape, float vangle) { (void)diameter; (void)shape; (void)vangle; }
+void sim_view_set_tool_geometry (float diameter, int shape, float vangle, int tool) { (void)diameter; (void)shape; (void)vangle; (void)tool; }
 void sim_view_reset_stock (void) {}
 void sim_view_set_title (const char *s) { (void)s; }
 
