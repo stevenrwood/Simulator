@@ -424,31 +424,23 @@ static void gl_quad (float ax, float ay, float az, float bx, float by, float bz,
     glVertex3f(ax, ay, az); glVertex3f(bx, by, bz); glVertex3f(cx, cy, cz); glVertex3f(dx, dy, dz);
 }
 
-// Flip the carved stock about an axis (for double-sided machining: cut one side, flip, cut the other).
-// mirror_x mirrors the columns (turning the stock over about the Y axis - left/right); otherwise mirrors
-// the rows (about the X axis - front/back). Render thread (called from the menu handler, same thread).
-static void flip_stock (int mirror_x)
+// Flip the stock over for double-sided machining (cut one side, flip, cut the other). The side already
+// machined goes to the underside (not modelled by the single top heightmap) and a fresh flat top comes up
+// to machine the second side - so this resets the surface to an uncut block. For a rectangular stock the
+// result is the same whichever axis is chosen; the axis just records which way the operator flipped.
+// Render thread (called from the menu handler, same thread). axis_y selects the X vs Y log label.
+static void flip_stock (int axis_y)
 {
     if(hmap == NULL || hm_nx == 0)
         return;
-    if(mirror_x) {
-        for(int iy = 0; iy < hm_ny; iy++)
-            for(int ix = 0; ix < hm_nx / 2; ix++) {
-                int a = iy * hm_nx + ix, b = iy * hm_nx + (hm_nx - 1 - ix);
-                float t = hmap[a]; hmap[a] = hmap[b]; hmap[b] = t;
-                if(hmap_tool) { unsigned char u = hmap_tool[a]; hmap_tool[a] = hmap_tool[b]; hmap_tool[b] = u; }
-            }
-    } else {
-        for(int iy = 0; iy < hm_ny / 2; iy++)
-            for(int ix = 0; ix < hm_nx; ix++) {
-                int a = iy * hm_nx + ix, b = (hm_ny - 1 - iy) * hm_nx + ix;
-                float t = hmap[a]; hmap[a] = hmap[b]; hmap[b] = t;
-                if(hmap_tool) { unsigned char u = hmap_tool[a]; hmap_tool[a] = hmap_tool[b]; hmap_tool[b] = u; }
-            }
-    }
-    carve_have_last = 0;                                 // don't carve a phantom path across the flip
+    for(int i = 0; i < hm_nx * hm_ny; i++)
+        hmap[i] = hm_top;
+    if(hmap_tool)
+        memset(hmap_tool, 0, (size_t)hm_nx * hm_ny);
+    carve_have_last = 0;
     hm_render_dirty = 1;
-    sim_view_log_append(mirror_x ? "stock: flipped on Y (mirror X)" : "stock: flipped on X (mirror Y)");
+    sim_view_log_append(axis_y ? "stock: flipped on Y - fresh top for the second side"
+                               : "stock: flipped on X - fresh top for the second side");
 }
 
 // Compile the carved stock into the display list: a flat top quad per cell, vertical walls where
