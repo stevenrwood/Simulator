@@ -60,6 +60,21 @@
 </table>
 </div>
 
+<!-- ============ Cross-repo dependencies ============ -->
+<div class="note" style="border-left-color:#6a4a00">
+  <strong>Cross-repo dependencies on <code>stevenrwood/ioSender</code>.</strong> Separate repos &mdash; every branch here builds on its own (no compile dependency). The coupling is <em>runtime / protocol</em>: a simulator feature is only exercised when the paired ioSender PR drives it over the socket. (ioSender PR numbers refer to that fork&rsquo;s <code>proposed-prs</code> tracker.)
+  <table class="files" style="margin-top:8px">
+  <tr><th>This PR</th><th>Needs ioSender PR</th><th>Why</th><th>Strength</th></tr>
+  <tr><td><a href="#pr1">PR 1</a> ymodem-socket</td><td>PR 14 sdcard-filesystems · PR 25 atc-macros</td><td>The YModem-over-socket fix only matters if a sender uploads files: the file manager (PR 14) and &ldquo;Install ATC macros&rdquo; (PR 25) push files via YModem.</td><td><strong>Hard</strong></td></tr>
+  <tr><td><a href="#pr2">PR 2</a> sim-probe</td><td>PR 25 atc-macros</td><td>The modelled stock / toolsetter / spoilboard surfaces are probed by the Start-Job / <code>probe_tfl</code> tool-length cycle. Manual <code>G38</code> works with any sender.</td><td>Soft</td></tr>
+  <tr><td><a href="#pr3">PR 3</a> littlefs</td><td>PR 14 sdcard-filesystems · PR 25 atc-macros · PR 11 macro-processor</td><td>The filesystem is browsed/uploaded (PR 14), written by ATC provisioning (PR 25) and read by <code>O&lt;name&gt; CALL</code> forwarding (PR 11).</td><td><strong>Hard</strong></td></tr>
+  <tr><td><a href="#pr4">PR 4</a> persistence-reboot</td><td>PR 15 connect-simulator <span class="foot">(&ldquo;My Machine&rdquo; only)</span></td><td>Settings persistence backs PR 15&rsquo;s &ldquo;My Machine&rdquo; EEPROM mirroring. <code>$REBOOT</code> is firmware-internal &mdash; any sender can issue it.</td><td>Soft</td></tr>
+  <tr><td><a href="#pr5">PR 5</a> sim-view</td><td>PR 6 load-folder · PR 15 connect-simulator</td><td>The carve reads <code>(TOOL &hellip;)</code> / <code>(STOCK &hellip;)</code> comments: PR 6 pushes them on load, PR 15&rsquo;s <em>always-send-comments</em> forces them through and is how you connect to the standalone sim. Without them the carve overlay reads &ldquo;no cutter geometry&rdquo;.</td><td><strong>Hard</strong> (carve)</td></tr>
+  <tr><td><a href="#base">Base</a></td><td>PR 15 connect-simulator <span class="foot">(download only)</span></td><td>The <code>sim-latest</code> CI asset feeds PR 15&rsquo;s download path (now vestigial, since that UI was stripped). Homing / switch simulation needs no sender feature.</td><td>Soft</td></tr>
+  </table>
+  <p class="foot" style="margin-top:6px">Same-repo prerequisites: PR 1 also needs submodule fork <a href="#sub2">S2</a> (Plugin_SD_card YModem init fix); PR 3 also needs submodule fork <a href="#sub1">S1</a> (core named-sub <code>/littlefs</code> path).</p>
+</div>
+
 <!-- ============ BASE ============ -->
 <div class="pr">
 <h2 id="base"><span class="badge base">BASE</span>Sim-core: simulated switches, fast homing, CI release</h2>
