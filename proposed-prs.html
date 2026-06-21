@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Proposed Pull Requests — grblHAL Simulator</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Arial, sans-serif; color: #1b1f23; font-size: 11pt; line-height: 1.45; }
+  h1 { font-size: 22pt; margin: 0 0 2px; }
+  h1 + .sub { color: #57606a; font-size: 10.5pt; margin-bottom: 18px; }
+  h2 { font-size: 14pt; margin: 0 0 6px; color: #0a3069; }
+  .pr { page-break-before: always; padding-top: 4px; }
+  .pr:first-of-type { page-break-before: avoid; }
+  .meta { border: 1px solid #d0d7de; border-radius: 6px; padding: 10px 12px; margin: 8px 0 12px; background: #f6f8fa; }
+  .meta div { margin: 2px 0; }
+  .label { display: inline-block; width: 92px; color: #57606a; font-weight: 600; vertical-align: top; }
+  code, .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 9.7pt; }
+  a { color: #0969da; text-decoration: none; word-break: break-all; }
+  table.files { width: 100%; border-collapse: collapse; margin: 4px 0 12px; font-size: 9.5pt; }
+  table.files th { text-align: left; border-bottom: 1.5px solid #d0d7de; padding: 3px 6px; color: #57606a; }
+  table.files td { padding: 2px 6px; border-bottom: 1px solid #eaeef2; }
+  table.files td.num { text-align: right; font-family: Consolas, monospace; white-space: nowrap; }
+  .add { color: #1a7f37; } .del { color: #cf222e; }
+  .desc { margin-top: 6px; }
+  .desc p { margin: 6px 0; }
+  .desc ul { margin: 6px 0 6px 0; padding-left: 20px; }
+  .desc li { margin: 3px 0; }
+  .badge { display:inline-block; background:#0a3069; color:#fff; border-radius: 10px; padding: 1px 9px; font-size: 9pt; margin-right: 6px; }
+  .badge.sub { background:#6a4a00; }
+  .badge.base { background:#3a5a40; }
+  .toc { border:1px solid #d0d7de; border-radius:6px; padding: 10px 14px; margin: 14px 0 0; }
+  .toc table { width:100%; border-collapse: collapse; font-size: 10pt; }
+  .toc td { padding: 3px 6px; border-bottom: 1px solid #eaeef2; }
+  .toc td.n { width: 22px; color:#57606a; }
+  .toc td.sz { text-align:right; white-space:nowrap; color:#57606a; font-family: Consolas, monospace; }
+  .foot { color:#57606a; font-size:9pt; margin-top:6px; }
+  .note { border:1px solid #d0d7de; border-left:4px solid #0969da; border-radius:6px; background:#f6f8fa; padding:8px 12px; margin:12px 0; font-size:10pt; }
+</style>
+</head>
+<body>
+
+<h1>Proposed Pull Requests — grblHAL Simulator</h1>
+<div class="sub">Fork <code>stevenrwood/Simulator</code> &rarr; upstream <code>grblHAL/Simulator</code> &nbsp;·&nbsp; base branch <code>master</code> (<code>171a661</code> &ldquo;Updated submodules&rdquo;) &nbsp;·&nbsp; 5 proposal branches + 2 submodule forks &nbsp;·&nbsp; <strong>none submitted upstream yet</strong> (staging document)</div>
+
+<div class="note">
+  <strong>Shared base.</strong> All five branches start from the same 6-commit <em>sim-core</em> base (<a href="#base">below</a>): simulated limit/probe switches, fast homing, and the CI release workflow. <code>pr/sim-view</code> (= the fork&rsquo;s <code>integration</code> branch, <code>9f7fdab</code>) is a <strong>superset</strong> that contains every other branch plus the 3D view; the focused branches are its constituent, separately-reviewable parts. Line counts below <strong>exclude vendored code</strong> (the littlefs library and the <code>src/grbl</code> / <code>src/sdcard</code> submodules — the latter are tracked as the two submodule-fork PRs at the end).
+</div>
+
+<div class="toc">
+<table>
+<tr><td class="n">B</td><td><a href="#base">Sim-core base &mdash; simulated switches, fast homing, CI release</a></td><td class="mono">(in all branches)</td><td class="sz">+192/&minus;9 · 4 files</td></tr>
+<tr><td class="n">1</td><td><a href="#pr1">YModem binary stream over the socket</a></td><td class="mono">pr/ymodem-socket</td><td class="sz">+254/&minus;55 · 11 files</td></tr>
+<tr><td class="n">2</td><td><a href="#pr2">Probe modelling (any-axis, stock/toolsetter/spoilboard, $6)</a></td><td class="mono">pr/sim-probe</td><td class="sz">+255/&minus;9 · 4 files</td></tr>
+<tr><td class="n">3</td><td><a href="#pr3">littlefs filesystem + <code>-format</code></a></td><td class="mono">pr/littlefs</td><td class="sz">+489/&minus;17 · 12 files <span class="foot">(+ littlefs lib)</span></td></tr>
+<tr><td class="n">4</td><td><a href="#pr4">Settings persistence fix + <code>$REBOOT</code></a></td><td class="mono">pr/persistence-reboot</td><td class="sz">+535/&minus;26 · 13 files</td></tr>
+<tr><td class="n">5</td><td><a href="#pr5">3D machine view + material-removal carve (superset)</a></td><td class="mono">pr/sim-view</td><td class="sz">+2597/&minus;74 · 26 files</td></tr>
+<tr><td class="n">S1</td><td><a href="#sub1">core: mount littlefs at /littlefs + named-sub search</a></td><td class="mono">core: simulator-littlefs-named-sub</td><td class="sz">submodule</td></tr>
+<tr><td class="n">S2</td><td><a href="#sub2">Plugin_SD_card: YModem init-before-publish fix</a></td><td class="mono">Plugin_SD_card: simulator-ymodem-init-fix</td><td class="sz">submodule</td></tr>
+</table>
+</div>
+
+<!-- ============ BASE ============ -->
+<div class="pr">
+<h2 id="base"><span class="badge base">BASE</span>Sim-core: simulated switches, fast homing, CI release</h2>
+<div class="meta">
+  <div><span class="label">Scope</span>The first 6 commits (<code>171a661..741ab27</code>) shared by <strong>all</strong> proposal branches below.</div>
+  <div><span class="label">Files</span><span class="mono">src/driver.c, src/driver.h, src/simulator.c, .github/workflows/release-sim.yml</span></div>
+</div>
+<div class="desc">
+<p>The stock simulator does not model limit or probe switches, so homing (<code>$H</code>) alarms out and probing cannot be exercised at all. This base makes the simulated machine behave enough like real hardware to run those workflows:</p>
+<ul>
+  <li><strong>Simulated limit &amp; probe switches</strong> derived from the tracked machine position, so <code>$H</code> and probe moves see real switch transitions.</li>
+  <li><strong>Fast <code>$H</code></strong> &mdash; the carriage parks near the home switch instead of seeking the full travel in real time, and <code>[MSG:Homing]</code> is emitted at the start.</li>
+  <li><strong>Honor <code>$5</code></strong> (limit invert) in the simulated limit switches.</li>
+  <li><strong>Suppress the hard-limit IRQ during homing</strong> &mdash; otherwise a machine with <code>$21=1</code> (hard limits enabled) trips <code>Alarm 8</code> the instant homing seeks the switch.</li>
+  <li><strong>CI release workflow</strong> (<code>release-sim.yml</code>): builds the patched Windows <code>grblHAL_sim.exe</code> and publishes it as the rolling <code>sim-latest</code> release asset &mdash; the build ioSender&rsquo;s &ldquo;download simulator&rdquo; path consumes.</li>
+</ul>
+</div>
+</div>
+
+<!-- ============ PR 1 ============ -->
+<div class="pr">
+<h2 id="pr1"><span class="badge">PR 1</span>Fix YModem (binary stream) over the socket so file upload works</h2>
+<div class="meta">
+  <div><span class="label">Branch</span><code>pr/ymodem-socket</code></div>
+  <div><span class="label">Depends on</span>Sim-core base.</div>
+  <div><span class="label">Compare</span><a href="https://github.com/grblHAL/Simulator/compare/master...stevenrwood:Simulator:pr/ymodem-socket">https://github.com/grblHAL/Simulator/compare/master...stevenrwood:Simulator:pr/ymodem-socket</a></div>
+</div>
+<div class="desc">
+<p>File upload into the simulator (ioSender&rsquo;s <em>Install ATC macros</em>, which sends the macro files over YModem) did not work across the simulator&rsquo;s TCP socket.</p>
+<ul>
+  <li><strong>YModem over the socket:</strong> handle the YModem binary stream correctly on the socket transport (the byte path differs from the serial console).</li>
+  <li><strong>Flush per TX burst, not per byte:</strong> the simulator flushed socket output one byte at a time, which stalled the binary transfer; flushing per write-burst lets blocks move.</li>
+</ul>
+<p class="foot">Pairs with the <a href="#sub2">Plugin_SD_card submodule fork</a> (the init-before-publish race that made block 0 NAK out of sequence). Touches the serial/MCU/platform plumbing: <code>serial.c</code>, <code>simulator.c</code>, <code>mcu.c</code>, <code>platform_windows.c</code>/<code>platform_linux.c</code>, <code>main.c</code>.</p>
+</div>
+</div>
+
+<!-- ============ PR 2 ============ -->
+<div class="pr">
+<h2 id="pr2"><span class="badge">PR 2</span>Probe modelling: any-axis, real surfaces, $6 invert</h2>
+<div class="meta">
+  <div><span class="label">Branch</span><code>pr/sim-probe</code></div>
+  <div><span class="label">Depends on</span>Sim-core base.</div>
+  <div><span class="label">Compare</span><a href="https://github.com/grblHAL/Simulator/compare/master...stevenrwood:Simulator:pr/sim-probe">https://github.com/grblHAL/Simulator/compare/master...stevenrwood:Simulator:pr/sim-probe</a></div>
+</div>
+<div class="desc">
+<p>Extends the simulated probe so ATC tool-length and 3D probing workflows can be rehearsed in the simulator:</p>
+<ul>
+  <li><strong>Trip on any axis</strong> (not just Z), enabling 3D corner / edge probing.</li>
+  <li><strong>Model real surfaces</strong> &mdash; stock, toolsetter and spoilboard &mdash; so probe moves contact something meaningful at the expected heights.</li>
+  <li><strong>Honor <code>$6</code></strong> (probe invert): an inverted-probe configuration is otherwise read as permanently triggered.</li>
+</ul>
+<p class="foot">Files: <code>src/driver.c</code>, <code>src/driver.h</code>, <code>src/simulator.c</code>.</p>
+</div>
+</div>
+
+<!-- ============ PR 3 ============ -->
+<div class="pr">
+<h2 id="pr3"><span class="badge">PR 3</span>Add littlefs filesystem support + <code>-format</code></h2>
+<div class="meta">
+  <div><span class="label">Branch</span><code>pr/littlefs</code></div>
+  <div><span class="label">Depends on</span>Sim-core base; the <a href="#sub1">core</a> and <a href="#sub2">Plugin_SD_card</a> submodule forks.</div>
+  <div><span class="label">Compare</span><a href="https://github.com/grblHAL/Simulator/compare/master...stevenrwood:Simulator:pr/littlefs">https://github.com/grblHAL/Simulator/compare/master...stevenrwood:Simulator:pr/littlefs</a></div>
+</div>
+<div class="desc">
+<p>Gives the simulator a persistent filesystem so ATC macro upload and <code>O&lt;name&gt; CALL</code> macro resolution behave like real hardware:</p>
+<ul>
+  <li><strong>littlefs</strong> backed by a host file, wired in via the SD card plugin.</li>
+  <li><strong>Per-block persistence</strong> in the littlefs HAL (rather than rewriting the whole image on every write).</li>
+  <li><strong>Optional case-insensitive name matching</strong> (<code>LFS_CASE_INSENSITIVE</code>) so upper-cased O-word labels resolve to lower-case macro files, matching FatFs semantics.</li>
+  <li><strong>Mount at <code>/littlefs</code></strong> and resolve named-sub macros there (the matching core search-path change is the <a href="#sub1">core submodule fork</a>).</li>
+  <li><strong><code>-format</code></strong> command-line switch to wipe and reformat littlefs on boot.</li>
+</ul>
+<p class="foot">The line count excludes the vendored <code>littlefs</code> library bundled into the build. Files: <code>src/littlefs_hal.c</code>/<code>.h</code>, <code>src/driver.c</code>, <code>src/main.c</code>, <code>CMakeLists.txt</code>/<code>.tpl</code>, <code>.gitmodules</code> (submodule pointers).</p>
+</div>
+</div>
+
+<!-- ============ PR 4 ============ -->
+<div class="pr">
+<h2 id="pr4"><span class="badge">PR 4</span>Settings persistence fix + <code>$REBOOT</code></h2>
+<div class="meta">
+  <div><span class="label">Branch</span><code>pr/persistence-reboot</code></div>
+  <div><span class="label">Depends on</span>Sim-core base + the littlefs work (PR 3).</div>
+  <div><span class="label">Compare</span><a href="https://github.com/grblHAL/Simulator/compare/master...stevenrwood:Simulator:pr/persistence-reboot">https://github.com/grblHAL/Simulator/compare/master...stevenrwood:Simulator:pr/persistence-reboot</a></div>
+</div>
+<div class="desc">
+<p>Two lifecycle fixes so the simulator survives restarts and self-reboots like real firmware:</p>
+<ul>
+  <li><strong>Settings persistence:</strong> correct the EEPROM checksum so <code>$</code> settings survive a restart, and gate the ATC <code>error_on_no_macro</code> behaviour.</li>
+  <li><strong><code>$REBOOT</code> (<code>hal.reboot</code>):</strong> implemented by relaunching the simulator process in an ordered way, so firmware that reboots itself (e.g. after a settings change) comes back up instead of just exiting.</li>
+</ul>
+<p class="foot">Files: <code>src/grbl_eeprom_extensions.c</code>, <code>src/driver.c</code>, <code>src/main.c</code>, <code>src/simulator.c</code>.</p>
+</div>
+</div>
+
+<!-- ============ PR 5 ============ -->
+<div class="pr">
+<h2 id="pr5"><span class="badge">PR 5</span>3D machine view + material-removal carve <span class="foot">(superset = <code>integration</code>)</span></h2>
+<div class="meta">
+  <div><span class="label">Branch</span><code>pr/sim-view</code> &nbsp;(= <code>integration</code>, <code>9f7fdab</code>)</div>
+  <div><span class="label">Contains</span>The sim-core base + PRs 1&ndash;4 + the 3D view. This is the branch <code>sim-latest</code> is built from.</div>
+  <div><span class="label">Compare</span><a href="https://github.com/grblHAL/Simulator/compare/master...stevenrwood:Simulator:pr/sim-view">https://github.com/grblHAL/Simulator/compare/master...stevenrwood:Simulator:pr/sim-view</a></div>
+</div>
+<div class="desc">
+<p>The flagship branch: adds an optional OpenGL <strong>3D machine view</strong> to the simulator and a stack of features on top of it. (Most of the bulk is <code>sim_view.c</code>.)</p>
+<ul>
+  <li><strong>3D view (<code>-view</code>):</strong> a window showing the machine, work envelope and tool; the simulator <strong>runs standalone by default</strong> (3D window on, default port 23, auto-load of the setup/EEPROM), and closing the window shuts the simulator down.</li>
+  <li><strong>Material-removal carve:</strong> a stock heightmap is lowered as the cutter passes (rendered via a GPU display list), shaded by depth and by cutter type (flat / ball / V); with <em>Reset Stock</em>, <em>Flip Stock</em> (turn over to a fresh top) and a configurable carve resolution. Stock size is taken from a <code>(STOCK X= Y= Z=)</code> g-code comment.</li>
+  <li><strong>UI:</strong> a real menu bar (<em>Settings</em> / <em>Format LittleFS</em> / <em>Show Log</em>), an editable Settings dialog (machine description &rarr; window title, carve resolution), a dedicated Show-Log window, a carve-status overlay, a build date/time stamp in the title, window-position persistence, and an application icon.</li>
+  <li><strong>ATC / tool table:</strong> <code>hal.probe.select</code> (fixes <code>error:39</code> on <code>G65 P5</code>), end-of-line <code>(TOOL &hellip;)</code> comment parsing, and a tool-table format spec (<code>TOOL_TABLE_FORMAT.md</code>) for the CAM post / add-in.</li>
+  <li><strong><code>-setup &lt;file&gt;</code> fixtures:</strong> define the spoilboard / stock / toolsetter explicitly and write <code>G28</code> / <code>G30</code> / <code>G59.3</code> at boot (decouples the spoilboard from <code>Z_max_travel</code>, fixing Alarm 5 on tall-Z machines).</li>
+</ul>
+<p class="foot">Key files: <code>src/sim_view.c</code>/<code>.h</code>, <code>src/sim_setup.h</code>, <code>src/driver.c</code>, <code>src/main.c</code>, <code>src/sim.rc</code>/<code>sim.ico</code>, <code>TOOL_TABLE_FORMAT.md</code>, <code>CMakeLists.txt</code>. Builds with CMake + MinGW (<code>LITTLEFS_ENABLE=2</code>).</p>
+</div>
+</div>
+
+<!-- ============ SUB 1 ============ -->
+<div class="pr">
+<h2 id="sub1"><span class="badge sub">SUBMODULE</span>core: mount littlefs at /littlefs + named-sub search path</h2>
+<div class="meta">
+  <div><span class="label">Repo</span><code>grblHAL/core</code> &nbsp;(fork <code>stevenrwood/core</code>)</div>
+  <div><span class="label">Branch</span><code>simulator-littlefs-named-sub</code> &nbsp;@ <code>fe16cb9</code> &nbsp;&mdash; submodule at <code>src/grbl</code></div>
+  <div><span class="label">Compare</span><a href="https://github.com/grblHAL/core/compare/master...stevenrwood:core:simulator-littlefs-named-sub">https://github.com/grblHAL/core/compare/master...stevenrwood:core:simulator-littlefs-named-sub</a></div>
+</div>
+<div class="desc">
+<p>The named-sub (<code>O&lt;name&gt; CALL</code>) resolver searched only the root filesystem. In the simulator&rsquo;s combined config littlefs mounts at <code>/littlefs</code> (root being the SD card), so macros stored on littlefs were never found &mdash; the open failure surfaced misleadingly as <code>error:81</code>. This fork makes the resolver search <code>/littlefs</code>, so uploaded ATC macros resolve. Consumed by <a href="#pr3">PR 3</a> and <a href="#pr5">PR 5</a> via the <code>src/grbl</code> submodule pointer.</p>
+</div>
+</div>
+
+<!-- ============ SUB 2 ============ -->
+<div class="pr">
+<h2 id="sub2"><span class="badge sub">SUBMODULE</span>Plugin_SD_card: YModem init-before-publish race fix</h2>
+<div class="meta">
+  <div><span class="label">Repo</span><code>grblHAL/Plugin_SD_card</code> &nbsp;(fork <code>stevenrwood/Plugin_SD_card</code>)</div>
+  <div><span class="label">Branch</span><code>simulator-ymodem-init-fix</code> &nbsp;@ <code>e33441a</code> &nbsp;&mdash; submodule at <code>src/sdcard</code></div>
+  <div><span class="label">Compare</span><a href="https://github.com/grblHAL/Plugin_SD_card/compare/master...stevenrwood:Plugin_SD_card:simulator-ymodem-init-fix">https://github.com/grblHAL/Plugin_SD_card/compare/master...stevenrwood:Plugin_SD_card:simulator-ymodem-init-fix</a></div>
+</div>
+<div class="desc">
+<p><code>trap_initial_soh</code> published <code>grbl.on_execute_realtime = protocol_loop</code> <em>before</em> initialising <code>ymodem.next_timeout</code> / <code>process</code>. In the simulator (whose grbl loop runs on a separate thread) that ordering let a spurious timeout NAK fire before block&nbsp;0, so ioSender retransmitted block&nbsp;0 out of sequence &mdash; the transfer stalled or flooded into an <code>OutOfMemoryException</code>. Fixed by initialising the YModem state <strong>before</strong> publishing the realtime hook. This is what makes ATC macro upload work at all; it pairs with <a href="#pr1">PR 1</a> on the simulator side. Consumed via the <code>src/sdcard</code> submodule pointer.</p>
+</div>
+</div>
+
+<p class="foot" style="margin-top:24px">Generated 2026-06-20. Branch tips: <code>pr/ymodem-socket 0f15ed5</code> · <code>pr/sim-probe 4df72ca</code> · <code>pr/littlefs 73b3e74</code> · <code>pr/persistence-reboot cadca97</code> · <code>pr/sim-view 9f7fdab</code> (= <code>integration</code>). Upstream base <code>grblHAL/Simulator master 171a661</code>.</p>
+
+</body>
+</html>
