@@ -44,6 +44,15 @@
 <div class="sub">Fork <code>stevenrwood/Simulator</code> &rarr; upstream <code>grblHAL/Simulator</code> &nbsp;·&nbsp; base branch <code>master</code> (<code>171a661</code> &ldquo;Updated submodules&rdquo;) &nbsp;·&nbsp; 5 proposal branches + 2 submodule forks &nbsp;·&nbsp; <strong>none submitted upstream yet</strong> (staging document)</div>
 
 <div class="note">
+  <strong>How to consume this &mdash; it&rsquo;s a bundle.</strong>
+  <ul style="margin:6px 0 0; padding-left:20px">
+    <li><strong>Use the whole thing.</strong> Clone <code>stevenrwood/Simulator</code> at <code>integration</code> with <code>--recurse-submodules</code> (it pins the <code>core</code> and <code>Plugin_SD_card</code> forks, so the firmware fixes ride along &mdash; no separate step), build with CMake + MinGW, and run it against <strong>ioSender at its <code>integration</code> branch</strong>. That pairing is what enables the 3D carve, ATC macro upload and littlefs macros.</li>
+    <li><strong>Just a virtual controller?</strong> Any of these branches, built on its own, gives a working simulator (homing, jogging, plain g-code, manual probing) for <em>any</em> grbl sender; only the headline features need the matching ioSender (see the dependency matrix below).</li>
+    <li><strong>Upstreaming one piece.</strong> Each card is a focused branch off <code>grblHAL/Simulator master</code>; the two submodule forks (<a href="#sub1">S1</a> / <a href="#sub2">S2</a>) go to <code>grblHAL/core</code> and <code>grblHAL/Plugin_SD_card</code>. The granular cards exist for that &mdash; for <em>using</em> it, take the two integrations.</li>
+  </ul>
+</div>
+
+<div class="note">
   <strong>Shared base.</strong> All five branches start from the same 6-commit <em>sim-core</em> base (<a href="#base">below</a>): simulated limit/probe switches, fast homing, and the CI release workflow. <code>pr/sim-view</code> (= the fork&rsquo;s <code>integration</code> branch, <code>9f7fdab</code>) is a <strong>superset</strong> that contains every other branch plus the 3D view; the focused branches are its constituent, separately-reviewable parts. Line counts below <strong>exclude vendored code</strong> (the littlefs library and the <code>src/grbl</code> / <code>src/sdcard</code> submodules — the latter are tracked as the two submodule-fork PRs at the end).
 </div>
 
