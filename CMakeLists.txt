@@ -121,7 +121,7 @@ target_link_libraries(grblHAL_validator PRIVATE
 # debug session picks it up without rebuilding ioSender. Entirely skipped when there is no sibling
 # ioSender checkout next to this repo (e.g. on CI), so it never affects the release build.
 set(_iosender "${CMAKE_SOURCE_DIR}/../ioSender")
-if(EXISTS "${_iosender}/simulator")
+if(WIN32 AND EXISTS "${_iosender}/simulator")
     set(_sim_dests
         "${_iosender}/simulator"
         "${_iosender}/ioSender XL/ioSender XL/bin/Debug/simulator"
