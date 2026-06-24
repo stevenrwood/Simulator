@@ -1,0 +1,10 @@
+{
+  "_note": "apply-prs manifest for the stevenrwood/Simulator fork. All PRs branch off pristine master (no in_master baseline) and are independent (no intra-sim requires); the tracker's Depends column is cross-fork relevance to ioSender PRs, not composition order. Driven by ioSender tools/apply-prs.py via tools/forks.json (--fork sim).",
+  "prs": {
+    "1": { "branch": "pr/ymodem-socket",      "title": "YModem binary stream over the socket",                         "in_master": false, "requires": [] },
+    "2": { "branch": "pr/sim-probe",          "title": "Probe modelling (any-axis, stock/toolsetter/spoilboard, $6)",  "in_master": false, "requires": [] },
+    "3": { "branch": "pr/littlefs",           "title": "littlefs filesystem + -format",                                "in_master": false, "requires": [] },
+    "4": { "branch": "pr/persistence-reboot", "title": "Settings persistence fix + $REBOOT",                           "in_master": false, "requires": [] },
+    "5": { "branch": "pr/sim-view",           "title": "3D machine view + material-removal carve (superset)",          "in_master": false, "requires": [] }
+  }
+}
