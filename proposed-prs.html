@@ -36,6 +36,17 @@
   .toc td.sz { text-align:right; white-space:nowrap; color:#57606a; font-family: Consolas, monospace; }
   .foot { color:#57606a; font-size:9pt; margin-top:6px; }
   .note { border:1px solid #d0d7de; border-left:4px solid #0969da; border-radius:6px; background:#f6f8fa; padding:8px 12px; margin:12px 0; font-size:10pt; }
+  .toc tr.tot td { border-top:2px solid #d0d7de; border-bottom:none; font-weight:600; padding-top:6px; }
+  .feat { border:1px solid #d0d7de; border-radius:6px; padding:10px 14px; margin:14px 0 0; }
+  .feat h3 { font-size:10.5pt; color:#0a3069; margin:11px 0 3px; border-bottom:1px solid #eaeef2; padding-bottom:2px; }
+  .feat h3.first { margin-top:2px; }
+  .feat table { width:100%; border-collapse:collapse; font-size:10pt; }
+  .feat td { padding:2px 6px; border-bottom:1px solid #f0f2f4; vertical-align:top; }
+  .feat td.tag { width:34px; white-space:nowrap; }
+  .feat td.prs { width:118px; white-space:nowrap; text-align:right; font-family:Consolas,monospace; font-size:9pt; }
+  .t-new { color:#1a7f37; font-weight:700; font-size:8pt; }
+  .t-chg { color:#d97706; font-weight:700; font-size:8pt; }
+  .t-fix { color:#cf222e; font-weight:700; font-size:8pt; }
 </style>
 </head>
 <body>
@@ -56,6 +67,20 @@
   <strong>Shared base.</strong> All five branches start from the same 6-commit <em>sim-core</em> base (<a href="#base">below</a>): simulated limit/probe switches, fast homing, and the CI release workflow. <code>pr/sim-view</code> (= the fork&rsquo;s <code>integration</code> branch, <code>9f7fdab</code>) is a <strong>superset</strong> that contains every other branch plus the 3D view; the focused branches are its constituent, separately-reviewable parts. Line counts below <strong>exclude vendored code</strong> (the littlefs library and the <code>src/grbl</code> / <code>src/sdcard</code> submodules — the latter are tracked as the two submodule-fork PRs at the end).
 </div>
 
+<div class="feat">
+<div class="foot" style="margin:0 0 8px"><strong>Features at a glance</strong> &mdash; <span class="t-new">NEW</span> new capability, <span class="t-chg">CHG</span> changes existing behaviour, <span class="t-fix">FIX</span> bug fix. Each is a focused branch off <code>master</code>; <code>pr/sim-view</code> (PR 5) is the integration superset of the rest. The two submodule-fork fixes (<a href="#sub1">S1</a>, <a href="#sub2">S2</a>) ride with PRs 3 and 1.</div>
+
+<h3 class="first">Simulator capabilities</h3>
+<table>
+<tr><td>Simulated limit/probe switches, fast homing, and a CI release workflow (the shared base of every branch)</td><td class="tag"><span class="t-new">NEW</span></td><td class="prs"><a href="#base">base</a></td></tr>
+<tr><td>File upload over the TCP socket &mdash; fixes the YModem binary stream so a sender&rsquo;s file push works</td><td class="tag"><span class="t-fix">FIX</span></td><td class="prs"><a href="#pr1">1</a> +<a href="#sub2">S2</a></td></tr>
+<tr><td>Probe modelling &mdash; real stock / toolsetter / spoilboard surfaces, trips on any axis, honours <code>$6</code> invert</td><td class="tag"><span class="t-new">NEW</span></td><td class="prs"><a href="#pr2">2</a></td></tr>
+<tr><td>littlefs filesystem + <code>-format</code> (persisted to an image) &mdash; gives the sim a real on-board filesystem</td><td class="tag"><span class="t-new">NEW</span></td><td class="prs"><a href="#pr3">3</a> +<a href="#sub1">S1</a></td></tr>
+<tr><td>Settings persistence fix (EEPROM checksum + ATC gate) and <code>$REBOOT</code> via ordered process relaunch</td><td class="tag"><span class="t-fix">FIX</span></td><td class="prs"><a href="#pr4">4</a></td></tr>
+<tr><td>3D machine view + live material-removal carve (reads <code>(TOOL&hellip;)</code> / <code>(STOCK&hellip;)</code> comments)</td><td class="tag"><span class="t-new">NEW</span></td><td class="prs"><a href="#pr5">5</a></td></tr>
+</table>
+</div>
+
 <div class="toc">
 <table>
 <tr><td class="n">B</td><td><a href="#base">Sim-core base &mdash; simulated switches, fast homing, CI release</a></td><td class="mono">(in all branches)</td><td class="sz">+192/&minus;9 · 4 files</td></tr>
@@ -66,6 +91,7 @@
 <tr><td class="n">5</td><td><a href="#pr5">3D machine view + material-removal carve (superset)</a></td><td class="mono">pr/sim-view</td><td class="sz">+2597/&minus;74 · 26 files</td></tr>
 <tr><td class="n">S1</td><td><a href="#sub1">core: mount littlefs at /littlefs + named-sub search</a></td><td class="mono">core: simulator-littlefs-named-sub</td><td class="sz">submodule</td></tr>
 <tr><td class="n">S2</td><td><a href="#sub2">Plugin_SD_card: YModem init-before-publish fix</a></td><td class="mono">Plugin_SD_card: simulator-ymodem-init-fix</td><td class="sz">submodule</td></tr>
+<tr class="tot"><td class="n"></td><td>Total &mdash; base + PRs 1&ndash;4 <span class="foot">(PR 5 is their integration superset; S1/S2 are submodule-fork commits)</span></td><td class="mono"></td><td class="sz">+1725/&minus;116 · 44 files</td></tr>
 </table>
 </div>
 
