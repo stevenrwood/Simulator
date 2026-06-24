@@ -97,7 +97,7 @@
 
 <!-- ============ Cross-repo dependencies ============ -->
 <div class="note" style="border-left-color:#6a4a00">
-  <strong>Cross-repo dependencies on <code>stevenrwood/ioSender</code>.</strong> Separate repos &mdash; every branch here builds on its own (no compile dependency). The coupling is <em>runtime / protocol</em>: a simulator feature is only exercised when the paired ioSender PR drives it over the socket. (ioSender PR numbers refer to that fork&rsquo;s <code>proposed-prs</code> tracker.)
+  <strong>Cross-repo dependencies on <code>stevenrwood/ioSender</code>.</strong> Separate repos &mdash; every branch here builds on its own (no compile dependency). The coupling is <em>runtime / protocol</em>: a simulator feature is only exercised when the paired ioSender PR drives it over the socket. (ioSender PR numbers refer to that fork&rsquo;s <code>ProposedPRs</code> tracker.)
   <table class="files" style="margin-top:8px">
   <tr><th>This PR</th><th>Needs ioSender PR</th><th>Why</th><th>Strength</th></tr>
   <tr><td><a href="#pr1">PR 1</a> ymodem-socket</td><td>PR 14 sdcard-filesystems · PR 25 atc-macros</td><td>The YModem-over-socket fix only matters if a sender uploads files: the file manager (PR 14) and &ldquo;Install ATC macros&rdquo; (PR 25) push files via YModem.</td><td><strong>Hard</strong></td></tr>
