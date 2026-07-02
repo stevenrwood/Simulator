@@ -1,0 +1,86 @@
+name: Build option-matched simulator
+
+# Builds the patched (homing-capable) grblHAL_sim.exe with a caller-supplied set of compile
+# options and publishes it as a per-signature release "sim-<sig>". ioSender dispatches this
+# (with the options read from the connected controller) so the simulator it runs matches the
+# real firmware's build - axis count, ganged/auto-squared axes, probe, etc.
+#
+# The set of sim-<sig> releases is effectively a shared remote build cache: ioSender first looks
+# for an existing sim-<sig> release (public download, no token) and only dispatches a build when
+# the signature is new. A token is needed ONLY to dispatch this workflow, never to download.
+#
+# build_flags is a space-separated list of preprocessor symbols (e.g. "N_AXIS=4 X_GANGED=1
+# PROBE_ENABLE=1"); it is injected at the %build_flags% marker in CMakeLists.tpl exactly the way
+# the io-engineering web builder injects the selected options.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sig:
+        description: Build signature (names the release, e.g. the hash of the option set)
+        required: true
+        type: string
+      build_flags:
+        description: 'Space-separated compile symbols, e.g. "N_AXIS=4 X_GANGED=1 PROBE_ENABLE=1"'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write   # required to create/update the sim-<sig> release
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Resolve %build_flags% in CMakeLists.tpl -> CMakeLists.txt. An empty build_flags yields an
+      # empty marker (the template's hardcoded defines still apply), matching a stock build.
+      - name: Inject options into CMakeLists.tpl
+        shell: bash
+        env:
+          BUILD_FLAGS: ${{ inputs.build_flags }}
+        run: |
+          python - <<'PY'
+          import os
+          flags = os.environ.get('BUILD_FLAGS', '').strip()
+          block = f'add_compile_definitions({flags})\n' if flags else ''
+          tpl = open('CMakeLists.tpl', encoding='utf-8').read()
+          if '%build_flags%' not in tpl:
+              raise SystemExit('CMakeLists.tpl is missing the %build_flags% marker')
+          open('CMakeLists.txt', 'w', encoding='utf-8', newline='\n').write(
+              tpl.replace('%build_flags%', block))
+          print('=== generated CMakeLists.txt (option lines) ===')
+          print('build_flags:', flags or '(none)')
+          PY
+
+      - name: Configure (MinGW Makefiles)
+        run: cmake -G "MinGW Makefiles" -DCMAKE_C_COMPILER=gcc -B build -S .
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Smoke test
+        shell: bash
+        working-directory: build
+        run: ./grblHAL_sim.exe -h || true
+
+      - name: Publish sim-<sig> release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: sim-${{ inputs.sig }}
+          name: grblHAL simulator (matched build ${{ inputs.sig }})
+          body: |
+            Patched, homing-capable grblHAL simulator for Windows, built to match a controller's options.
+
+            Signature: `${{ inputs.sig }}`
+            Options: `${{ inputs.build_flags }}`
+
+            Stable asset URL:
+            https://github.com/${{ github.repository }}/releases/download/sim-${{ inputs.sig }}/grblHAL_sim.exe
+          files: build/grblHAL_sim.exe
+          make_latest: false
