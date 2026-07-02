@@ -38,9 +38,11 @@ jobs:
         with:
           submodules: recursive
 
-      # Resolve %build_flags% in CMakeLists.tpl -> CMakeLists.txt. An empty build_flags yields an
-      # empty marker (the template's hardcoded defines still apply), matching a stock build.
-      - name: Inject options into CMakeLists.tpl
+      # Inject the caller's compile symbols into the committed root CMakeLists.txt (the one the stable
+      # release build uses), right after the project() line. An empty build_flags leaves it untouched,
+      # matching a stock build. We patch the working file rather than regenerate from CMakeLists.tpl
+      # because the .tpl targets a subfolder layout (../src/...) while the root build is root-relative.
+      - name: Inject options into CMakeLists.txt
         shell: bash
         env:
           BUILD_FLAGS: ${{ inputs.build_flags }}
@@ -48,14 +50,19 @@ jobs:
           python - <<'PY'
           import os
           flags = os.environ.get('BUILD_FLAGS', '').strip()
-          block = f'add_compile_definitions({flags})\n' if flags else ''
-          tpl = open('CMakeLists.tpl', encoding='utf-8').read()
-          if '%build_flags%' not in tpl:
-              raise SystemExit('CMakeLists.tpl is missing the %build_flags% marker')
-          open('CMakeLists.txt', 'w', encoding='utf-8', newline='\n').write(
-              tpl.replace('%build_flags%', block))
-          print('=== generated CMakeLists.txt (option lines) ===')
-          print('build_flags:', flags or '(none)')
+          if not flags:
+              print('no build_flags; stock build'); raise SystemExit(0)
+          lines = open('CMakeLists.txt', encoding='utf-8').read().splitlines(keepends=True)
+          out, inserted = [], False
+          for ln in lines:
+              out.append(ln)
+              if not inserted and ln.lstrip().startswith('project('):
+                  out.append(f'add_compile_definitions({flags})  # injected by build-matched-sim\n')
+                  inserted = True
+          if not inserted:
+              raise SystemExit('could not find a project() line in CMakeLists.txt to inject after')
+          open('CMakeLists.txt', 'w', encoding='utf-8', newline='\n').writelines(out)
+          print('injected build_flags:', flags)
           PY
 
       - name: Configure (MinGW Makefiles)
