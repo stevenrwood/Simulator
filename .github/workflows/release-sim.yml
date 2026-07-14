@@ -6,7 +6,7 @@ name: Build and publish Windows simulator
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "integration" ]   # integration = the branch with littlefs/ATC/YModem support - what CI ships
   workflow_dispatch:
 
 permissions:
@@ -38,8 +38,8 @@ jobs:
           tag_name: sim-latest
           name: grblHAL simulator (latest patched build)
           body: |
-            Patched, homing-capable grblHAL simulator for Windows, built from master.
-            Auto-published by CI on each push to master.
+            Patched, homing-capable grblHAL simulator for Windows, built from integration.
+            Auto-published by CI on each push to integration.
 
             Stable asset URL:
             https://github.com/${{ github.repository }}/releases/download/sim-latest/grblHAL_sim.exe
