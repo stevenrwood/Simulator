@@ -27,11 +27,11 @@ with the probe sequence at its top (after this comment), it just works.
 ## Tool-table comments
 
 ```gcode
-(TOOL T=1 D=6.35  TYPE=FLAT)
-(TOOL T=2 D=3.175 TYPE=BALL)
-(TOOL T=3 D=12.7  TYPE=VBIT A=60)
-(TOOL T=4 D=1.0   TYPE=VBIT A=30)
-(TOOL T=5 D=6.0   TYPE=FLAT)
+(TOOL T=1 D=6.35  TYPE=FLAT L=40)
+(TOOL T=2 D=3.175 TYPE=BALL L=50)
+(TOOL T=3 D=12.7  TYPE=VBIT A=60 L=35)
+(TOOL T=4 D=1.0   TYPE=VBIT A=30 L=40)
+(TOOL T=5 D=6.0   TYPE=FLAT L=40)
 ```
 
 ### Grammar
@@ -45,6 +45,7 @@ with the probe sequence at its top (after this comment), it just works.
 | `D`    | Cutter **diameter**                  | Millimetres. The carve uses radius = D / 2.                 |
 | `TYPE` | Cutter shape                         | `FLAT` (or `ENDMILL`) \| `BALL` \| `VBIT`. Unknown → `FLAT`. |
 | `A`    | V-bit **included angle**             | Degrees. Only used when `TYPE=VBIT`.                        |
+| `L`    | Tool **length** (mm)                 | Optional. A CAM-reported stickout/gauge length, not read by the simulator's carve - consumed by senders (e.g. ioSender) for TLO/probe purposes. Defaults to 40mm when omitted. |
 
 ### Shapes
 
