@@ -33,6 +33,7 @@
 
 #include "grbl/hal.h"
 #include "grbl/state_machine.h"
+#include "grbl/machine_limits.h"   // limits_set_machine_positions - the core's own post-homing arithmetic
 #include "grbl/ngc_params.h"
 
 #if LITTLEFS_ENABLE
@@ -199,6 +200,41 @@ static void sim_setup_apply_offsets (void)
             sim_setup.stock_corner_x - G28_CORNER_CLEAR, sim_setup.stock_corner_y - G28_CORNER_CLEAR,
             sim_setup.spoilboard_z + G28_Z_ABOVE_SPOIL,
             sim_setup.toolsetter_x, sim_setup.toolsetter_y, sim_setup.toolchange_x, sim_setup.toolchange_y);
+}
+
+// -homed (see sim_setup.h). Come up in the state a completed homing cycle leaves behind, without the
+// cycle: flag every axis homed and set the machine position the same way the core does.
+//
+// This deliberately reuses limits_set_machine_positions rather than writing sys.position by hand - it is
+// the same call mc_homing_cycle makes on the manual-homing path (motion_control.c: "sys.homed.mask |=
+// cycle.mask; limits_set_machine_positions(cycle, false)"), so where the machine believes it is comes
+// from the core's own arithmetic over $23/$132/$27, not from a second copy of that formula here.
+//
+// The homing-required lock is released too: with $22's init_lock set, grblHAL boots into Alarm and
+// refuses motion until a cycle runs, which would make "already homed" a half-truth the operator has to
+// clear by hand.
+bool sim_start_homed = false;
+static bool start_homed_applied = false;
+
+static void sim_apply_start_homed (void)
+{
+    axes_signals_t cycle = { .mask = AXES_BITMASK };
+
+    sys.homed.mask = AXES_BITMASK;
+    limits_set_machine_positions(cycle, false);
+
+    // Mirror the end of a real cycle: no homing alarm, machine idle and ready.
+    if(state_get() == STATE_ALARM) {
+        sys.alarm = Alarm_None;
+        state_set(STATE_IDLE);
+    }
+
+    start_homed_applied = true;
+
+    fprintf(stderr, "homed: started as already homed (no cycle)  MPos=(%.3f,%.3f,%.3f)\n",
+            sys.position[X_AXIS] / settings.axis[X_AXIS].steps_per_mm,
+            sys.position[Y_AXIS] / settings.axis[Y_AXIS].steps_per_mm,
+            sys.position[Z_AXIS] / settings.axis[Z_AXIS].steps_per_mm);
 }
 
 // ---- Settings dialog accessors (sim_setup.h) -----------------------------------------------------
@@ -1071,6 +1107,10 @@ void sim_process_realtime (uint_fast16_t state)
     // macros find them without the operator setting them by hand.
     if(sim_setup.active && !sim_setup.applied && settings.axis[X_AXIS].steps_per_mm > 0.0f)
         sim_setup_apply_offsets();
+
+    // Same one-shot point for -homed: the machine comes up as though a homing cycle had just finished.
+    if(sim_start_homed && !start_homed_applied && settings.axis[X_AXIS].steps_per_mm > 0.0f)
+        sim_apply_start_homed();
 
     // Feed the optional 3D view (-view): push the static geometry once settings are live, then the live
     // tool position every tick. Skipped entirely when -view is off (sim_view_active() == false).

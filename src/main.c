@@ -56,6 +56,9 @@ extern void sim_littlefs_format_on_boot (void);
 // Defined in driver.c; -setup loads a fixture/probe setup file (spoilboard, stock, toolsetter, tool change).
 extern bool sim_setup_load (const char *path);
 
+// Defined in driver.c; -homed brings the machine up already homed (see sim_setup.h).
+#include "sim_setup.h"
+
 static int file_exists (const char *path)
 {
     FILE *f = fopen(path, "rb");
@@ -90,6 +93,7 @@ void print_usage(const char* badarg)
       "    -format            : wipe the littlefs filesystem (littlefs.img) and reformat it on boot.\n"
       "    -setup <file>      : load fixture setup (spoilboard/stock/toolsetter/tool-change); sets G28/G30/G59.3.\n"
       "                         default: sim_setup.cfg next to the exe if present.\n"
+      "    -homed             : come up already homed (no homing cycle, no motion, no homing alarm).\n"
       "    -view              : open the 3D machine view window (default; envelope, fixtures, live tool head).\n"
       "    -headless          : run without the 3D machine view window.\n"
       "    -h                 : this help.\n"
@@ -355,6 +359,10 @@ int main(int argc, char *argv[])
                 case 'h':
                     if (strcmp(argv[0], "-headless") == 0) {  // -headless : run without the 3D window
                         want_view = 0;
+                        break;
+                    }
+                    if (strcmp(argv[0], "-homed") == 0) {     // -homed : start as if homing had completed
+                        sim_start_homed = true;
                         break;
                     }
                     print_usage(NULL);
