@@ -975,14 +975,29 @@ static int gl_create (void)
         return 0;
 
     // Menu bar: top-level command items (no sub-menus) - clicking each sends WM_COMMAND.
+    //
+    // Divided by a disabled "|" between each, because every item is a COMMAND rather than a drop-down
+    // and six bare words in a row read as one run-on sentence ("Settings Reset Stock Flip Stock on X
+    // ...") instead of six separate buttons. MF_SEPARATOR is not an option: Windows ignores separators
+    // in a menu BAR and only draws them in drop-downs. A disabled item takes no command id, never
+    // highlights on hover and cannot be clicked, so it is a divider in every way that matters.
+    #define APPEND_MENU_DIVIDER() AppendMenuA(hmenu, MF_STRING | MF_DISABLED | MF_GRAYED, 0, "|")
+
     hmenu = CreateMenu();
     AppendMenuA(hmenu, MF_STRING, ID_SETTINGS,    "Settings");
+    APPEND_MENU_DIVIDER();
     AppendMenuA(hmenu, MF_STRING, ID_RESETSTOCK,  "Reset Stock");
+    APPEND_MENU_DIVIDER();
     AppendMenuA(hmenu, MF_STRING, ID_FLIPX,       "Flip Stock on X");
+    APPEND_MENU_DIVIDER();
     AppendMenuA(hmenu, MF_STRING, ID_FLIPY,       "Flip Stock on Y");
+    APPEND_MENU_DIVIDER();
     AppendMenuA(hmenu, MF_STRING, ID_FORMAT,      "Format LittleFS");
+    APPEND_MENU_DIVIDER();
     AppendMenuA(hmenu, MF_STRING, ID_SHOWLOG,     "Show Log");
     SetMenu(hwnd, hmenu);
+
+    #undef APPEND_MENU_DIVIDER
 
     hdc = GetDC(hwnd);
 
