@@ -1010,10 +1010,16 @@ void settings_changed (settings_t *settings, settings_changed_flags_t changed)
 // silently NOT exercising the macro flow a real ATC machine would use.
 static void sim_seed_atc_macros (void)
 {
+    // All four of AtcMacros.Required, plus the atc.sum sidecar. pcenter.macro was absent for as long
+    // as this existed, and without the sidecar ioSender has no checksum to compare against - it falls
+    // back to comparing file SIZES, which is how a one-byte generator bug surfaced as "ATC macros are
+    // out of date" on a simulator whose macros were otherwise correct.
     const struct { const char *name; const char *content; } macros[] = {
         { "tc.macro", embedded_macro_tc },
         { "pcorner.macro", embedded_macro_pcorner },
-        { "pvisecorner.macro", embedded_macro_pvisecorner }
+        { "pvisecorner.macro", embedded_macro_pvisecorner },
+        { "pcenter.macro", embedded_macro_pcenter },
+        { "atc.sum", embedded_atc_sum }
     };
 
     for(size_t i = 0; i < sizeof(macros) / sizeof(macros[0]); i++) {
