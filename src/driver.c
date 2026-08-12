@@ -1248,6 +1248,15 @@ bool driver_init ()
 #endif
     fs_littlefs_mount(LITTLEFS_MOUNT_DIR, sim_littlefs_hal());
     sim_seed_atc_macros();
+    // Drop the first registration before remounting. vfs_mount() appends to the mount list
+    // unconditionally - it walks to the end and links a new entry, never replacing an existing
+    // mount at the same path - so mounting twice left TWO identical /littlefs entries. Everything
+    // downstream believed them: $FI reported the filesystem twice, ioSender dutifully listed it
+    // twice (doubling the filesystem traffic on the shared wire), and $F answered error:62 on the
+    // phantom second one. Since ioSender's ack wait only ever accepted "ok", that error was
+    // ignored and the listing burned its full timeout - 36 seconds, reported to the operator as
+    // "Directory listing failed" and to the ATC check as "macros not installed".
+    vfs_unmount(LITTLEFS_MOUNT_DIR);
     fs_littlefs_mount(LITTLEFS_MOUNT_DIR, sim_littlefs_hal());   // remount: re-fires atc_macros_attach now that tc.macro exists
 #endif
 
