@@ -215,6 +215,7 @@ static void sim_setup_apply_offsets (void)
 // clear by hand.
 bool sim_start_homed = false;
 static bool start_homed_applied = false;
+static bool inputs_initialised = false;
 
 static void sim_apply_start_homed (void)
 {
@@ -223,6 +224,11 @@ static void sim_apply_start_homed (void)
     sys.homed.mask = AXES_BITMASK;
     limits_set_machine_positions(cycle, false);
 
+    // NOTE: deliberately does NOT copy sys.position into sim_axis_pos. They are not the same frame:
+    // sim_axis_pos is an absolute carriage tracker whose switches sit at +/-travel, while $22 bit 3
+    // (force_set_origin) makes the core call the switch position 0. Syncing them was tried and left the
+    // machine in alarm at rest, because the carriage then reads as parked on its own switches.
+    //
     // Soft limits are derived from the homed state, not from the settings alone: sys.work_envelope is
     // zero-initialised and only mc_homing_cycle fills it in (motion_control.c, right after the cycle
     // succeeds). Setting the homed mask without this left min == max == 0 on every axis, so the
@@ -1125,6 +1131,34 @@ void sim_process_realtime (uint_fast16_t state)
     // Same one-shot point for -homed: the machine comes up as though a homing cycle had just finished.
     if(sim_start_homed && !start_homed_applied && settings.axis[X_AXIS].steps_per_mm > 0.0f)
         sim_apply_start_homed();
+
+    // And the same for the simulated INPUT levels, which had no starting value at all. sim_update_inputs()
+    // is otherwise only ever called from stepperPulseStart, so until the first step the limit pins sit at
+    // their reset value of 0 - and limitsGetState() re-applies $5 to whatever it reads, so every axis in
+    // the invert mask reports ASSERTED while parked safely mid-travel. With $5=XYZ (ordinary NO switches)
+    // that is all three limits engaged in every status report from boot, and then the first step drives
+    // the pins from 0 to $5 - a rising edge on all three, straight into the hard-limit IRQ - so the
+    // machine alarms out a fraction of a millimetre into its first move. Both symptoms, one missing
+    // initialisation; the simulator is switch-type agnostic by design and $5 was never the problem.
+    //
+    // The recorded edge is then discarded deliberately: this is the power-on LEVEL, not a transition,
+    // and mcu_gpio_in latches into irq_state regardless of irq_mask - so a bit left pending here would
+    // fire the instant limitsEnable() arms the mask, which is the very alarm this is removing.
+    if(!inputs_initialised && settings.axis[X_AXIS].steps_per_mm > 0.0f) {
+        // Establish the level with edge detection switched OFF. mcu_gpio_in records a transition into
+        // irq_state whenever the rising/falling masks allow it, and by this point limitsEnable() has
+        // already armed irq_mask - so simply calling sim_update_inputs() here trips the hard-limit
+        // interrupt on the very 0 -> $5 transition it exists to prevent, and the machine boots into
+        // Alarm 1. Clearing irq_state afterwards is not enough. There is no edge to report anyway:
+        // this is the pin's power-on level, not the switch changing state.
+        uint16_t rising = gpio[LIMITS_PORT0].rising.mask, falling = gpio[LIMITS_PORT0].falling.mask;
+        gpio[LIMITS_PORT0].rising.mask = gpio[LIMITS_PORT0].falling.mask = 0;
+        sim_update_inputs();
+        gpio[LIMITS_PORT0].rising.mask = rising;
+        gpio[LIMITS_PORT0].falling.mask = falling;
+        gpio[LIMITS_PORT0].irq_state.mask = 0;
+        inputs_initialised = true;
+    }
 
     // Feed the optional 3D view (-view): push the static geometry once settings are live, then the live
     // tool position every tick. Skipped entirely when -view is off (sim_view_active() == false).
