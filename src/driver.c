@@ -223,6 +223,14 @@ static void sim_apply_start_homed (void)
     sys.homed.mask = AXES_BITMASK;
     limits_set_machine_positions(cycle, false);
 
+    // Soft limits are derived from the homed state, not from the settings alone: sys.work_envelope is
+    // zero-initialised and only mc_homing_cycle fills it in (motion_control.c, right after the cycle
+    // succeeds). Setting the homed mask without this left min == max == 0 on every axis, so the
+    // envelope check refused EVERY non-zero target - a G53 park at a G30 comfortably inside the
+    // configured travel came back Alarm:2 with the machine never having moved. Claiming to be homed
+    // means reproducing what homing leaves behind, and the envelope is part of that.
+    limits_set_work_envelope();
+
     // Mirror the end of a real cycle: no homing alarm, machine idle and ready.
     if(state_get() == STATE_ALARM) {
         sys.alarm = Alarm_None;
