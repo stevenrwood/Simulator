@@ -41,3 +41,10 @@ build
 *.out
 *.DAT
 littlefs.img
+
+# Claude Code turn loop (hub-managed hooks); settings.json and turn-config.json ARE tracked
+.claude/turn-state.json
+**/.claude/turn-state.json
+.claude/settings.local.json
+.claude/worktrees/
+.claude/scheduled_tasks.lock

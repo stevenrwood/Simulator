@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "This project's inputs to the shared turn-loop hooks in claude-hub/hooks/.",
+    "The mechanism lives in the hub; every string specific to the Simulator fork lives here.",
+    "Layered over hub defaults.json - `denies` merge by name and then FIELD BY FIELD, so the hub's",
+    "'push' rule applies here unchanged and is deliberately not restated.",
+    "Canonical doc: c:\\github\\claude-hub\\playbooks\\turn_workflow_loop.md."
+  ],
+
+  "project": "Simulator",
+
+  "source": {
+    "_extensions": "C sim + the CMake inputs that decide what gets built. 'txt' is here for CMakeLists.txt - it is the only tracked .txt in the repo. Markdown is not source here: ProposedPRs/CLAUDE.md/BUILD-MACOS.md are documents, and demanding a build after editing one would only teach me to ignore the gate.",
+    "extensions": ["c", "h", "txt", "tpl", "cmake", "rc"],
+    "_ignore": "Checked, and empty on purpose. Nothing else writes source into this repo during a turn: no workflow in .github/workflows commits back (build-matched-sim, cmake-multi-platform, release-sim all only build/publish), the repo ships no commit-making script of its own, and ioSender's tools/apply-prs.py - the one cross-project writer - composes onto a throwaway pr-subset branch and the only thing it commits itself is .gitattributes, which carries no source extension. Add an entry when a writer appears whose paths intersect the list above, not before.",
+    "ignore": []
+  },
+
+  "verify": {
+    "_note": "A clean compile is not evidence for a simulator - the interesting failures (probing, littlefs, settings persistence, the 3D view) only show up once it is running. So the gate wants the sim actually launched, not just built. Build alone will NOT satisfy it.",
+    "pattern": "grblHAL_sim(\\.exe)?\\s+[^&|]*-p\\s*\\d+",
+    "command": "cmake --build build --parallel && ./build/grblHAL_sim -p 23     # launch in the background, then point a sender at 127.0.0.1:23",
+    "label": "build + launch the sim on :23"
+  },
+
+  "denies": [],
+
+  "checklist": [
+    "== TURN LOOP (c:\\github\\claude-hub\\playbooks\\turn_workflow_loop.md - canonical, follow all of it) ==",
+    "1. PLAN FIRST. Before the first Edit/Write, state in your visible response what you understood and",
+    "   how you intend to do it. A plain question (\"can we...\", \"what if...\") is a DISCUSSION - answer it,",
+    "   do not implement. Record it:",
+    "   c:\\github\\claude-hub\\tools\\turn.ps1 plan \"<restated ask + approach>\"",
+    "2. IMPLEMENT. One AskUserQuestion call at a time. On a rename, grep the old identifier repo-wide",
+    "   BEFORE the first build - src/ is C, so a missed reference may still link.",
+    "3. INTERIM BUILDS: cmake --build build --parallel. Compile-checking is fine and does not end a turn.",
+    "4. COMMIT AS YOU GO - each piece the moment it is verified. Never save commits up.",
+    "5. VERIFY, and for this repo that means RUNNING it, not compiling it:",
+    "   cmake --build build --parallel && ./build/grblHAL_sim -p 23",
+    "6. HAND OFF - say plainly what to test and which sender to point at 127.0.0.1:23. The turn ends here.",
+    "",
+    "THIS FORK'S SHAPE (CLAUDE.md is canonical):",
+    "- master = pristine upstream. integration = every PR merged, and what you actually run.",
+    "  pr/<name> = one focused change off master, for upstream review. Know which you are on before editing.",
+    "- Two companion fixes live in the submodule forks src/grbl (core) and src/sdcard (Plugin_SD_card).",
+    "  A change there is a commit in that submodule PLUS a pointer bump here - both, or it does not ship.",
+    "- Line endings LF. The 3D view (-view) is Windows-only; the base sim must keep building on mac/Linux.",
+    "- Pair with ioSender at integration for the full virtual-CNC path - but that is a SEPARATE session",
+    "  in that repo. One project per session, or the conversation log files under the wrong project."
+  ]
+}
