@@ -22,9 +22,12 @@ $RECYCLE.BIN/
 
 .svn
 
-# Build folder
+# Build folders - out-of-source CMake trees. Nothing under build* is tracked,
+# so the glob is safe and covers build-local/, build-matched/, build-root/,
+# build_verify/ and whatever the next one gets called.
 
 build
+build*/
 
 #
 # =========================
